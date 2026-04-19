@@ -88,3 +88,26 @@ flutter:
   #
   # For details regarding fonts from package dependencies,
   # see https://flutter.dev/to/font-from-package
+  fonts:
+    - family: Apercu Pro
+      fonts:
+         - asset: fonts/Apercu Pro Bold Italic.otf
+           weight: 700
+           style: italic
+         - asset: fonts/Apercu Pro Bold.otf
+           weight: 700
+         - asset: fonts/Apercu Pro Italic.otf
+           style: italic
+    - family: Apercu Pro Light
+      fonts:
+         - asset: fonts/Apercu Pro Light Italic.otf
+           style: italic  
+         - asset: fonts/Apercu Pro Light.otf
+         - asset: fonts/Apercu Pro Medium Italic.otf
+           style: italic  
+    - family: Apercu Pro Medium
+      fonts:
+         - asset: fonts/Apercu Pro Medium.otf
+    - family: Apercu Pro Regular
+      fonts:
+         - asset: fonts/Apercu Pro Regular.otf
