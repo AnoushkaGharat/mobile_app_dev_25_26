@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 
+String _name = "novy";
+
 void main() {
   runApp(const MyApp());
 }
@@ -165,7 +167,7 @@ class _MainPageState extends State<MainPage> {
         backgroundColor: const Color.fromARGB(255, 120, 142, 221),//Theme.of(context).colorScheme.inversePrimary,
         // Here we take the value from the MyHomePage object that was created by
         // the App.build method, and use it to set our appbar title.
-        title: const Text("FBLA Application", style: TextStyle(fontFamily: "Apercu Pro", fontWeight: FontWeight.bold, color: const Color.fromARGB(255, 255, 255, 255)))
+        title: const Text("FBLA Link", style: TextStyle(fontFamily: "Apercu Pro", fontWeight: FontWeight.bold, color: const Color.fromARGB(255, 255, 255, 255)))
         ),
         body: Center(
         // Center is a layout widget. It takes a single child and positions it
@@ -186,16 +188,20 @@ class _MainPageState extends State<MainPage> {
           // TRY THIS: Invoke "debug painting" (choose the "Toggle Debug Paint"
           // action in the IDE, or press "p" in the console), to see the
           // wireframe for each widget.
-          mainAxisAlignment: MainAxisAlignment.center,
+          mainAxisAlignment: MainAxisAlignment.start,
           children: <Widget>[
 
             //Top area
             Stack( 
               alignment: Alignment.center, 
               children:<Widget>[
-                Text(
-                    'Hello',
-                    style: Theme.of(context).textTheme.headlineMedium,
+                Container(
+                  color: Color.fromARGB(255, 33, 62, 106),
+                  width: MediaQuery.of(context).size.width,
+                  height: MediaQuery.of(context).size.height/3,
+                  alignment: Alignment.center,
+                  child: Text("Hello, $_name!", style: TextStyle(fontFamily: "Apercu Pro", fontWeight: FontWeight.bold, color:  Color.fromARGB(255, 255, 255, 255),fontSize: 100))
+                  
                   ),
               ],
             ),
@@ -205,6 +211,7 @@ class _MainPageState extends State<MainPage> {
                   const Padding(
                       padding: EdgeInsets.only(bottom:50.0), // Adds 16px space on all sides
                       child: Text("Your Text Here"),
+
                     ),
                   Text(
                     'Hello',
