@@ -43,7 +43,7 @@ class FBLAApp extends StatelessWidget {
         useMaterial3: true,
         scaffoldBackgroundColor: kBg,
         colorScheme: ColorScheme.fromSeed(seedColor: kNavy),
-        fontFamily: 'Nunito',
+        fontFamily: 'Apercu',
       ),
       home: const Shell(),
     );
@@ -89,19 +89,6 @@ class _ShellState extends State<Shell> with TickerProviderStateMixin {
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: kBg,
-      body: AnimatedSwitcher(
-        duration: const Duration(milliseconds: 320),
-        switchInCurve: Curves.easeOutCubic,
-        switchOutCurve: Curves.easeIn,
-        transitionBuilder: (child, anim) => FadeTransition(
-          opacity: anim,
-          child: SlideTransition(
-            position: Tween<Offset>(begin: const Offset(0, 0.03), end: Offset.zero).animate(anim),
-            child: child,
-          ),
-        ),
-        child: KeyedSubtree(key: ValueKey(_tab), child: _pages[_tab]),
-      ),
       bottomNavigationBar: _GlassNav(current: _tab, controllers: _navCtrls, onTap: _onTap),
     );
   }
@@ -141,7 +128,7 @@ class _GlassNav extends StatelessWidget {
                       behavior: HitTestBehavior.opaque,
                       onTap: () => onTap(i),
                       child: AnimatedBuilder(
-                        animation: controllers[i],
+                      
                         builder: (_, __) {
                           final t = controllers[i].value;
                           return Column(
