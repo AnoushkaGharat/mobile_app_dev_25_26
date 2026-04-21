@@ -1,30 +1,52 @@
-// This is a basic Flutter widget test.
-//
-// To perform an interaction with a widget in your test, use the WidgetTester
-// utility in the flutter_test package. For example, you can send tap and scroll
-// gestures. You can also use WidgetTester to find child widgets in the widget
-// tree, read text, and verify that the values of widget properties are correct.
-
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:mobile_app_dev_25_26/main.dart';
 
 void main() {
-  testWidgets('Counter increments smoke test', (WidgetTester tester) async {
-    // Build our app and trigger a frame.
-    await tester.pumpWidget(const MyApp());
+  testWidgets('App launches and shows FBLA Connect', (WidgetTester tester) async {
+    await tester.pumpWidget(const FBLAApp());
+    await tester.pumpAndSettle();
 
-    // Verify that our counter starts at 0.
-    expect(find.text('0'), findsOneWidget);
-    expect(find.text('1'), findsNothing);
+    expect(find.text('FBLA Connect'), findsOneWidget);
+  });
 
-    // Tap the '+' icon and trigger a frame.
-    await tester.tap(find.byIcon(Icons.add));
-    await tester.pump();
+  testWidgets('Bottom nav switches tabs', (WidgetTester tester) async {
+    await tester.pumpWidget(const FBLAApp());
+    await tester.pumpAndSettle();
 
-    // Verify that our counter has incremented.
-    expect(find.text('0'), findsNothing);
-    expect(find.text('1'), findsOneWidget);
+    expect(find.text('Events'), findsOneWidget);
+    await tester.tap(find.text('Events'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('UPCOMING EVENTS'), findsOneWidget);
+  });
+
+  testWidgets('Dashboard shows points', (WidgetTester tester) async {
+    await tester.pumpWidget(const FBLAApp());
+    await tester.pumpAndSettle();
+
+    expect(find.textContaining('points earned this year'), findsOneWidget);
+  });
+
+  testWidgets('Profile tab shows user name', (WidgetTester tester) async {
+    await tester.pumpWidget(const FBLAApp());
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.text('Me'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Alex Johnson'), findsWidgets);
+  });
+
+  testWidgets('Reports tab shows report list', (WidgetTester tester) async {
+    await tester.pumpWidget(const FBLAApp());
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.text('Reports'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Block Report'), findsOneWidget);
+    expect(find.text('Financial Report'), findsOneWidget);
   });
 }
