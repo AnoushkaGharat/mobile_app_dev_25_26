@@ -38,7 +38,7 @@ class FBLAApp extends StatelessWidget {
   Widget build(BuildContext context) {
     return MaterialApp(
       debugShowCheckedModeBanner: false,
-      title: 'FBLA Connect',
+      title: 'FBLA Link',
       theme: ThemeData(
         useMaterial3: true,
         scaffoldBackgroundColor: kBg,
