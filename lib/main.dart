@@ -1,35 +1,96 @@
-import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
-import 'dart:math' as math;
 import 'dart:ui';
 
-void main() {
+import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
+
+const kBlobAsset = 'assets/blob.png';
+
+Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   SystemChrome.setSystemUIOverlayStyle(const SystemUiOverlayStyle(
     statusBarColor: Colors.transparent,
     statusBarIconBrightness: Brightness.dark,
   ));
+
+  await Supabase.initialize(
+    url: 'https://krylwlbyntcmuzxmssyg.supabase.co',
+    anonKey: 'sb_publishable_ZUxKQwJN4KQsfT7zGFPYlw_d0kfs_Ym',
+  );
+
   runApp(const FBLAApp());
 }
 
-const kNavy        = Color(0xFF0B2463);
-const kNavyLight   = Color(0xFF1A3A7A);
-const kNavyGlass   = Color(0x220B2463);
-const kGold        = Color(0xFFF5A623);
-const kGoldLight   = Color(0xFFFFD97D);
-const kGoldGlass   = Color(0x33F5A623);
-const kGoldBorder  = Color(0x66F5A623);
-const kWhite       = Colors.white;
-const kBg          = Color(0xFFF0F4FF);
-const kBgWarm      = Color(0xFFFFF8EE);
-const kText        = Color(0xFF0B2463);
-const kMuted       = Color(0xFF6B7A99);
-const kBorder      = Color(0x220B2463);
-const kGlassWhite  = Color(0xCCFFFFFF);
-const kGlassCard   = Color(0xB3FFFFFF);
-const kRed         = Color(0xFFE53E3E);
-const kGreen       = Color(0xFF38A169);
-const kTeal        = Color(0xFF0EA5A0);
+const kNavy = Color(0xFF0B2463);
+const kNavyLight = Color(0xFF1A3A7A);
+const kGold = Color(0xFFF5A623);
+const kWhite = Colors.white;
+const kBg = Color(0xFFF0F4FF);
+const kMuted = Color(0xFF6B7A99);
+const kBorder = Color(0x220B2463);
+const kGlassWhite = Color(0xCCFFFFFF);
+const kGlassCard = Color(0xB3FFFFFF);
+const kRed = Color(0xFFE53E3E);
+const kGreen = Color(0xFF38A169);
+const kTeal = Color(0xFF0EA5A0);
+
+SupabaseClient get _client => Supabase.instance.client;
+
+User? _currentUser(AuthState? state) {
+  return state?.session?.user ?? _client.auth.currentUser;
+}
+
+String _usernameFromUser(User? user) {
+  return (user?.userMetadata?['username'] as String?) ??
+      user?.email?.split('@').first ??
+      'User';
+}
+
+int _pointsFromUser(User? user) {
+  final raw = user?.userMetadata?['points'];
+
+  if (raw is int) return raw;
+  if (raw is num) return raw.toInt();
+  if (raw is String) return int.tryParse(raw) ?? 0;
+
+  return 0;
+}
+
+int _levelFromPoints(int points) {
+  return (points ~/ 100) + 1;
+}
+
+String _initialsFromName(String name) {
+  final initials = name
+      .trim()
+      .split(RegExp(r'\s+'))
+      .where((part) => part.isNotEmpty)
+      .take(2)
+      .map((part) => part[0].toUpperCase())
+      .join();
+
+  return initials.isEmpty ? 'U' : initials;
+}
+
+Future<void> _addPoints({
+  required int amount,
+  required String reason,
+}) async {
+  final user = _client.auth.currentUser;
+  if (user == null) return;
+
+  final metadata = Map<String, dynamic>.from(user.userMetadata ?? {});
+  final currentPoints = _pointsFromUser(user);
+  final newPoints = currentPoints + amount;
+
+  metadata['username'] = _usernameFromUser(user);
+  metadata['points'] = newPoints;
+  metadata['last_activity'] = reason;
+
+  await _client.auth.updateUser(
+    UserAttributes(data: metadata),
+  );
+}
 
 class FBLAApp extends StatelessWidget {
   const FBLAApp({super.key});
@@ -44,44 +105,624 @@ class FBLAApp extends StatelessWidget {
         scaffoldBackgroundColor: kBg,
         colorScheme: ColorScheme.fromSeed(seedColor: kNavy),
         fontFamily: 'Nunito',
+        textButtonTheme: TextButtonThemeData(
+          style: TextButton.styleFrom(foregroundColor: kWhite),
+        ),
       ),
-      home: const Shell(),
+      home: const AuthGate(),
     );
   }
 }
 
-class Shell extends StatefulWidget {
-  const Shell({super.key});
+class AuthGate extends StatefulWidget {
+  const AuthGate({super.key});
+
   @override
-  State<Shell> createState() => _ShellState();
+  State<AuthGate> createState() => _AuthGateState();
 }
 
-class _ShellState extends State<Shell> with TickerProviderStateMixin {
-  int _tab = 0;
-  late List<AnimationController> _navCtrls;
-
-  static const _pages = [DashboardPage(), EventsPage(), ReportsPage(), ProfilePage()];
+class _AuthGateState extends State<AuthGate> {
+  bool _showResetPassword = false;
 
   @override
   void initState() {
     super.initState();
-    _navCtrls = List.generate(4, (i) => AnimationController(
-      vsync: this,
-      duration: const Duration(milliseconds: 250),
-      value: i == 0 ? 1.0 : 0.0,
-    ));
+
+    _client.auth.onAuthStateChange.listen((data) {
+      if (!mounted) return;
+      if (data.event == AuthChangeEvent.passwordRecovery) {
+        setState(() => _showResetPassword = true);
+      }
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (_showResetPassword) {
+      return const ResetPasswordPage();
+    }
+
+    return StreamBuilder<AuthState>(
+      stream: _client.auth.onAuthStateChange,
+      initialData: AuthState(
+        AuthChangeEvent.initialSession,
+        _client.auth.currentSession,
+      ),
+      builder: (context, snapshot) {
+        final session = snapshot.data?.session;
+        if (session == null) return const LoginPage();
+        return const Shell();
+      },
+    );
+  }
+}
+
+class LoginPage extends StatefulWidget {
+  const LoginPage({super.key});
+
+  @override
+  State<LoginPage> createState() => _LoginPageState();
+}
+
+class _LoginPageState extends State<LoginPage> {
+  final _emailController = TextEditingController();
+  final _passwordController = TextEditingController();
+  final _formKey = GlobalKey<FormState>();
+
+  bool _obscurePassword = true;
+  bool _isLoading = false;
+
+  @override
+  void dispose() {
+    _emailController.dispose();
+    _passwordController.dispose();
+    super.dispose();
+  }
+
+  Future<void> logIn() async {
+    if (!(_formKey.currentState?.validate() ?? false)) return;
+
+    setState(() => _isLoading = true);
+
+    try {
+      await _client.auth.signInWithPassword(
+        email: _emailController.text.trim(),
+        password: _passwordController.text.trim(),
+      );
+
+      await _addPoints(
+        amount: 5,
+        reason: 'Logged in',
+      );
+    } on AuthException catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(e.message)),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Error: $e')),
+      );
+    } finally {
+      if (mounted) {
+        setState(() => _isLoading = false);
+      }
+    }
+  }
+
+  Future<void> resetPassword() async {
+    final email = _emailController.text.trim();
+
+    if (email.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Enter your email first.')),
+      );
+      return;
+    }
+
+    try {
+      await _client.auth.resetPasswordForEmail(
+        email,
+        redirectTo: 'fbla-link://reset-password',
+      );
+
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Password reset email sent.')),
+      );
+    } on AuthException catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(e.message)),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Error: $e')),
+      );
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      body: _AuthBackground(
+        child: Center(
+          child: SingleChildScrollView(
+            padding: const EdgeInsets.all(24),
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: 420),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const SizedBox(height: 28),
+                  const Text(
+                    'Welcome back',
+                    style: TextStyle(
+                      fontWeight: FontWeight.bold,
+                      fontSize: 30,
+                      color: Colors.white,
+                    ),
+                  ),
+                  const SizedBox(height: 15),
+                  const Text(
+                    'Log in',
+                    style: TextStyle(color: Colors.white, fontSize: 16),
+                  ),
+                  const SizedBox(height: 32),
+                  Form(
+                    key: _formKey,
+                    child: Column(
+                      children: [
+                        TextFormField(
+                          controller: _emailController,
+                          decoration: _authFieldDecoration(
+                            label: 'Email',
+                            hint: 'you@example.com',
+                            prefixIcon: const Icon(Icons.email_outlined),
+                          ),
+                          validator: (value) {
+                            final text = value?.trim() ?? '';
+                            if (text.isEmpty) return 'Please enter your email';
+                            if (!text.contains('@')) return 'Enter a valid email';
+                            return null;
+                          },
+                        ),
+                        Align(
+                          alignment: Alignment.centerRight,
+                          child: TextButton(
+                            onPressed: resetPassword,
+                            child: const Text('Forgot password?'),
+                          ),
+                        ),
+                        const SizedBox(height: 8),
+                        TextFormField(
+                          controller: _passwordController,
+                          obscureText: _obscurePassword,
+                          decoration: _authFieldDecoration(
+                            label: 'Password',
+                            hint: 'Enter your password',
+                            prefixIcon: const Icon(Icons.lock_outline),
+                            suffixIcon: IconButton(
+                              onPressed: () {
+                                setState(() {
+                                  _obscurePassword = !_obscurePassword;
+                                });
+                              },
+                              icon: Icon(
+                                _obscurePassword
+                                    ? Icons.visibility_off
+                                    : Icons.visibility,
+                              ),
+                            ),
+                          ),
+                          validator: (value) {
+                            final text = value ?? '';
+                            if (text.isEmpty) return 'Please enter your password';
+                            if (text.length < 6) {
+                              return 'Password must be at least 6 characters';
+                            }
+                            return null;
+                          },
+                        ),
+                        const SizedBox(height: 24),
+                        SizedBox(
+                          width: double.infinity,
+                          height: 56,
+                          child: FilledButton(
+                            onPressed: _isLoading ? null : logIn,
+                            style: FilledButton.styleFrom(
+                              backgroundColor: const Color.fromRGBO(
+                                10,
+                                46,
+                                127,
+                                1.0,
+                              ),
+                              shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(18),
+                              ),
+                            ),
+                            child: _isLoading
+                                ? const SizedBox(
+                                    height: 24,
+                                    width: 24,
+                                    child: CircularProgressIndicator(
+                                      strokeWidth: 2.5,
+                                      color: Colors.white,
+                                    ),
+                                  )
+                                : const Text('Log In'),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(height: 24),
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      const Text(
+                        "Don't have an account?",
+                        style: TextStyle(color: Colors.white),
+                      ),
+                      TextButton(
+                        onPressed: () {
+                          Navigator.push(
+                            context,
+                            MaterialPageRoute(
+                              builder: (_) => const SignUpPage(),
+                            ),
+                          );
+                        },
+                        child: const Text('Sign up'),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class ResetPasswordPage extends StatefulWidget {
+  const ResetPasswordPage({super.key});
+
+  @override
+  State<ResetPasswordPage> createState() => _ResetPasswordPageState();
+}
+
+class _ResetPasswordPageState extends State<ResetPasswordPage> {
+  final _passwordController = TextEditingController();
+  bool _loading = false;
+
+  Future<void> _updatePassword() async {
+    final password = _passwordController.text.trim();
+
+    if (password.length < 6) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Password must be at least 6 characters.')),
+      );
+      return;
+    }
+
+    setState(() => _loading = true);
+
+    try {
+      await _client.auth.updateUser(
+        UserAttributes(password: password),
+      );
+
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Password updated successfully.')),
+      );
+
+      Navigator.of(context).pushAndRemoveUntil(
+        MaterialPageRoute(builder: (_) => const LoginPage()),
+        (route) => false,
+      );
+    } on AuthException catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(e.message)),
+      );
+    } finally {
+      if (mounted) {
+        setState(() => _loading = false);
+      }
+    }
   }
 
   @override
   void dispose() {
-    for (final c in _navCtrls) c.dispose();
+    _passwordController.dispose();
     super.dispose();
   }
 
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      body: _AuthBackground(
+        child: SafeArea(
+          child: Padding(
+            padding: const EdgeInsets.all(24),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const SizedBox(height: 16),
+                const Text(
+                  'Reset Password',
+                  style: TextStyle(
+                    color: Colors.white,
+                    fontSize: 30,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+                const SizedBox(height: 24),
+                TextField(
+                  controller: _passwordController,
+                  obscureText: true,
+                  decoration: _authFieldDecoration(
+                    label: 'New Password',
+                    hint: 'Enter your new password',
+                    prefixIcon: const Icon(Icons.lock_outline),
+                  ),
+                ),
+                const SizedBox(height: 24),
+                SizedBox(
+                  width: double.infinity,
+                  height: 56,
+                  child: FilledButton(
+                    onPressed: _loading ? null : _updatePassword,
+                    style: FilledButton.styleFrom(
+                      backgroundColor: const Color.fromRGBO(10, 46, 127, 1.0),
+                    ),
+                    child: _loading
+                        ? const CircularProgressIndicator(color: Colors.white)
+                        : const Text('Save New Password'),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class SignUpPage extends StatefulWidget {
+  const SignUpPage({super.key});
+
+  @override
+  State<SignUpPage> createState() => _SignUpPageState();
+}
+
+class _SignUpPageState extends State<SignUpPage> {
+  final _emailController = TextEditingController();
+  final _passwordController = TextEditingController();
+  final _usernameController = TextEditingController();
+  final _formKey = GlobalKey<FormState>();
+
+  bool _obscurePassword = true;
+  bool _isLoading = false;
+
+  @override
+  void dispose() {
+    _emailController.dispose();
+    _passwordController.dispose();
+    _usernameController.dispose();
+    super.dispose();
+  }
+
+  Future<void> signUp() async {
+    if (!(_formKey.currentState?.validate() ?? false)) return;
+
+    setState(() => _isLoading = true);
+
+    try {
+      await _client.auth.signUp(
+        email: _emailController.text.trim(),
+        password: _passwordController.text.trim(),
+        data: {
+          'username': _usernameController.text.trim(),
+          'points': 25,
+          'last_activity': 'Created account',
+        },
+      );
+
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Account created. You can now log in.')),
+      );
+      Navigator.pop(context);
+    } on AuthException catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(e.message)),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Error: $e')),
+      );
+    } finally {
+      if (mounted) {
+        setState(() => _isLoading = false);
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      body: _AuthBackground(
+        child: SafeArea(
+          child: Padding(
+            padding: const EdgeInsets.all(24),
+            child: Form(
+              key: _formKey,
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  IconButton(
+                    onPressed: () => Navigator.pop(context),
+                    icon: const Icon(Icons.arrow_back, color: Colors.white),
+                  ),
+                  const SizedBox(height: 12),
+                  const Text(
+                    'Sign Up',
+                    style: TextStyle(
+                      color: Colors.white,
+                      fontSize: 32,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                  const SizedBox(height: 24),
+                  TextFormField(
+                    controller: _usernameController,
+                    decoration: _authFieldDecoration(
+                      label: 'Username',
+                      hint: 'Enter your username',
+                    ),
+                    validator: (value) {
+                      if ((value ?? '').trim().isEmpty) {
+                        return 'Enter a username';
+                      }
+                      return null;
+                    },
+                  ),
+                  const SizedBox(height: 16),
+                  TextFormField(
+                    controller: _emailController,
+                    keyboardType: TextInputType.emailAddress,
+                    decoration: _authFieldDecoration(
+                      label: 'Email',
+                      hint: 'you@example.com',
+                      prefixIcon: const Icon(Icons.email_outlined),
+                    ),
+                    validator: (value) {
+                      final text = value?.trim() ?? '';
+                      if (text.isEmpty) return 'Enter your email';
+                      if (!text.contains('@')) return 'Enter a valid email';
+                      return null;
+                    },
+                  ),
+                  const SizedBox(height: 16),
+                  TextFormField(
+                    controller: _passwordController,
+                    obscureText: _obscurePassword,
+                    decoration: _authFieldDecoration(
+                      label: 'Password',
+                      hint: 'Enter your password',
+                      prefixIcon: const Icon(Icons.lock_outline),
+                      suffixIcon: IconButton(
+                        icon: Icon(
+                          _obscurePassword
+                              ? Icons.visibility_off
+                              : Icons.visibility,
+                          color: Colors.black54,
+                        ),
+                        onPressed: () {
+                          setState(() {
+                            _obscurePassword = !_obscurePassword;
+                          });
+                        },
+                      ),
+                    ),
+                    validator: (value) {
+                      final text = value ?? '';
+                      if (text.isEmpty) return 'Enter a password';
+                      if (text.length < 6) return 'At least 6 characters';
+                      return null;
+                    },
+                  ),
+                  const SizedBox(height: 24),
+                  SizedBox(
+                    width: double.infinity,
+                    height: 52,
+                    child: FilledButton(
+                      onPressed: _isLoading ? null : signUp,
+                      style: FilledButton.styleFrom(
+                        backgroundColor: const Color.fromRGBO(10, 46, 127, 1.0),
+                      ),
+                      child: _isLoading
+                          ? const CircularProgressIndicator(color: Colors.white)
+                          : const Text('Create Account'),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _AuthBackground extends StatelessWidget {
+  final Widget child;
+
+  const _AuthBackground({required this.child});
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      decoration: const BoxDecoration(
+        image: DecorationImage(
+          image: AssetImage('assets/GRADIENT.png'),
+          fit: BoxFit.cover,
+        ),
+      ),
+      child: child,
+    );
+  }
+}
+
+InputDecoration _authFieldDecoration({
+  required String label,
+  required String hint,
+  Widget? prefixIcon,
+  Widget? suffixIcon,
+}) {
+  return InputDecoration(
+    labelText: label,
+    hintText: hint,
+    prefixIcon: prefixIcon,
+    suffixIcon: suffixIcon,
+    filled: true,
+    fillColor: Colors.white,
+    border: OutlineInputBorder(
+      borderRadius: BorderRadius.circular(18),
+      borderSide: BorderSide.none,
+    ),
+  );
+}
+
+class Shell extends StatefulWidget {
+  const Shell({super.key});
+
+  @override
+  State<Shell> createState() => _ShellState();
+}
+
+class _ShellState extends State<Shell> {
+  int _tab = 0;
+
+  final _pages = const [
+    DashboardPage(),
+    EventsPage(),
+    ReportsPage(),
+    ProfilePage(),
+  ];
+
   void _onTap(int i) {
-    if (_tab == i) return;
-    _navCtrls[_tab].reverse();
-    _navCtrls[i].forward();
     setState(() => _tab = i);
   }
 
@@ -89,33 +730,26 @@ class _ShellState extends State<Shell> with TickerProviderStateMixin {
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: kBg,
-      body: AnimatedSwitcher(
-        duration: const Duration(milliseconds: 320),
-        switchInCurve: Curves.easeOutCubic,
-        switchOutCurve: Curves.easeIn,
-        transitionBuilder: (child, anim) => FadeTransition(
-          opacity: anim,
-          child: SlideTransition(
-            position: Tween<Offset>(begin: const Offset(0, 0.03), end: Offset.zero).animate(anim),
-            child: child,
-          ),
-        ),
-        child: KeyedSubtree(key: ValueKey(_tab), child: _pages[_tab]),
-      ),
-      bottomNavigationBar: _GlassNav(current: _tab, controllers: _navCtrls, onTap: _onTap),
+      body: _pages[_tab],
+      bottomNavigationBar: _GlassNav(current: _tab, onTap: _onTap),
     );
   }
 }
 
 class _GlassNav extends StatelessWidget {
   final int current;
-  final List<AnimationController> controllers;
   final ValueChanged<int> onTap;
 
-  static const _icons  = [Icons.home_rounded, Icons.event_rounded, Icons.bar_chart_rounded, Icons.person_rounded];
+  static const _icons = [
+    Icons.home_rounded,
+    Icons.event_rounded,
+    Icons.bar_chart_rounded,
+    Icons.person_rounded,
+  ];
+
   static const _labels = ['Home', 'Events', 'Reports', 'Profile'];
 
-  const _GlassNav({required this.current, required this.controllers, required this.onTap});
+  const _GlassNav({required this.current, required this.onTap});
 
   @override
   Widget build(BuildContext context) {
@@ -126,9 +760,6 @@ class _GlassNav extends StatelessWidget {
           decoration: BoxDecoration(
             color: kGlassWhite,
             border: const Border(top: BorderSide(color: kBorder, width: 1)),
-            boxShadow: [
-              BoxShadow(color: kNavy.withOpacity(0.06), blurRadius: 20, offset: const Offset(0, -4)),
-            ],
           ),
           child: SafeArea(
             child: SizedBox(
@@ -140,40 +771,41 @@ class _GlassNav extends StatelessWidget {
                     child: GestureDetector(
                       behavior: HitTestBehavior.opaque,
                       onTap: () => onTap(i),
-                      child: AnimatedBuilder(
-                        animation: controllers[i],
-                        builder: (_, __) {
-                          final t = controllers[i].value;
-                          return Column(
-                            mainAxisAlignment: MainAxisAlignment.center,
-                            children: [
-                              Transform.scale(
-                                scale: 1.0 + t * 0.2,
-                                child: Container(
-                                  width: 46, height: 34,
-                                  decoration: BoxDecoration(
-                                    color: Color.lerp(Colors.transparent, kGoldGlass, t),
-                                    borderRadius: BorderRadius.circular(12),
-                                    border: Border.all(
-                                      color: Color.lerp(Colors.transparent, kGoldBorder, t)!,
-                                      width: 1,
-                                    ),
-                                  ),
-                                  child: Icon(
-                                    _icons[i], size: 20,
-                                    color: Color.lerp(kMuted, kNavy, t),
-                                  ),
-                                ),
+                      child: Column(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          Container(
+                            width: 46,
+                            height: 34,
+                            decoration: BoxDecoration(
+                              color: active
+                                  ? const Color(0x33F5A623)
+                                  : Colors.transparent,
+                              borderRadius: BorderRadius.circular(12),
+                              border: Border.all(
+                                color: active
+                                    ? const Color(0x66F5A623)
+                                    : Colors.transparent,
                               ),
-                              const SizedBox(height: 3),
-                              Text(_labels[i], style: TextStyle(
-                                fontSize: 10,
-                                fontWeight: active ? FontWeight.w800 : FontWeight.w500,
-                                color: Color.lerp(kMuted, kNavy, t),
-                              )),
-                            ],
-                          );
-                        },
+                            ),
+                            child: Icon(
+                              _icons[i],
+                              size: 20,
+                              color: active ? kNavy : kMuted,
+                            ),
+                          ),
+                          const SizedBox(height: 3),
+                          Text(
+                            _labels[i],
+                            style: TextStyle(
+                              fontSize: 10,
+                              fontWeight: active
+                                  ? FontWeight.w800
+                                  : FontWeight.w500,
+                              color: active ? kNavy : kMuted,
+                            ),
+                          ),
+                        ],
                       ),
                     ),
                   );
@@ -206,9 +838,6 @@ class _NavyAppBar extends StatelessWidget implements PreferredSizeWidget {
           begin: Alignment.topLeft,
           end: Alignment.bottomRight,
         ),
-        boxShadow: [
-          BoxShadow(color: Color(0x330B2463), blurRadius: 16, offset: Offset(0, 4)),
-        ],
       ),
       child: SafeArea(
         child: Padding(
@@ -216,16 +845,21 @@ class _NavyAppBar extends StatelessWidget implements PreferredSizeWidget {
           child: Row(
             children: [
               Container(
-                width: 40, height: 40,
+                width: 40,
+                height: 40,
                 decoration: BoxDecoration(
                   color: kGold,
                   borderRadius: BorderRadius.circular(12),
-                  boxShadow: [BoxShadow(color: kGold.withOpacity(0.5), blurRadius: 10)],
                 ),
                 child: const Center(
-                  child: Text('F', style: TextStyle(
-                    color: kNavy, fontSize: 22, fontWeight: FontWeight.w900, height: 1,
-                  )),
+                  child: Text(
+                    'F',
+                    style: TextStyle(
+                      color: kNavy,
+                      fontSize: 22,
+                      fontWeight: FontWeight.w900,
+                    ),
+                  ),
                 ),
               ),
               const SizedBox(width: 12),
@@ -233,13 +867,22 @@ class _NavyAppBar extends StatelessWidget implements PreferredSizeWidget {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 mainAxisAlignment: MainAxisAlignment.center,
                 children: [
-                  Text(title, style: const TextStyle(
-                    fontSize: 18, fontWeight: FontWeight.w900, color: kWhite, letterSpacing: -0.3,
-                  )),
+                  Text(
+                    title,
+                    style: const TextStyle(
+                      fontSize: 18,
+                      fontWeight: FontWeight.w900,
+                      color: kWhite,
+                    ),
+                  ),
                   if (subtitle.isNotEmpty)
-                    Text(subtitle, style: TextStyle(
-                      fontSize: 11, color: kGoldLight.withOpacity(0.8), fontWeight: FontWeight.w500,
-                    )),
+                    Text(
+                      subtitle,
+                      style: const TextStyle(
+                        fontSize: 11,
+                        color: Color(0xCCFFD97D),
+                      ),
+                    ),
                 ],
               ),
               const Spacer(),
@@ -255,40 +898,22 @@ class _NavyAppBar extends StatelessWidget implements PreferredSizeWidget {
 class _GlassCard extends StatelessWidget {
   final Widget child;
   final EdgeInsets? padding;
-  final VoidCallback? onTap;
-  final Color? tint;
-  final double radius;
 
   const _GlassCard({
     required this.child,
     this.padding,
-    this.onTap,
-    this.tint,
-    this.radius = 20,
   });
 
   @override
   Widget build(BuildContext context) {
-    return GestureDetector(
-      onTap: onTap,
-      child: ClipRRect(
-        borderRadius: BorderRadius.circular(radius),
-        child: BackdropFilter(
-          filter: ImageFilter.blur(sigmaX: 12, sigmaY: 12),
-          child: Container(
-            padding: padding ?? const EdgeInsets.all(18),
-            decoration: BoxDecoration(
-              color: tint ?? kGlassCard,
-              borderRadius: BorderRadius.circular(radius),
-              border: Border.all(color: kBorder.withOpacity(0.6)),
-              boxShadow: [
-                BoxShadow(color: kNavy.withOpacity(0.06), blurRadius: 20, offset: const Offset(0, 6)),
-              ],
-            ),
-            child: child,
-          ),
-        ),
+    return Container(
+      padding: padding ?? const EdgeInsets.all(18),
+      decoration: BoxDecoration(
+        color: kGlassCard,
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(color: kBorder),
       ),
+      child: child,
     );
   }
 }
@@ -298,116 +923,33 @@ class _GoldPill extends StatelessWidget {
   final IconData? icon;
   final bool filled;
 
-  const _GoldPill(this.label, {this.icon, this.filled = false});
+  const _GoldPill(this.label, {this.icon, this.filled = false, super.key});
 
   @override
   Widget build(BuildContext context) {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
       decoration: BoxDecoration(
-        color: filled ? kGold : kGoldGlass,
+        color: filled ? kGold : const Color(0x33F5A623),
         borderRadius: BorderRadius.circular(20),
-        border: Border.all(color: kGoldBorder),
+        border: Border.all(color: const Color(0x66F5A623)),
       ),
       child: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
-          if (icon != null) ...[Icon(icon, size: 11, color: filled ? kNavy : kGold), const SizedBox(width: 4)],
-          Text(label, style: TextStyle(
-            fontSize: 10, fontWeight: FontWeight.w800,
-            color: filled ? kNavy : kGold,
-          )),
+          if (icon != null) ...[
+            Icon(icon, size: 11, color: filled ? kNavy : kGold),
+            const SizedBox(width: 4),
+          ],
+          Text(
+            label,
+            style: TextStyle(
+              fontSize: 10,
+              fontWeight: FontWeight.w800,
+              color: filled ? kNavy : kGold,
+            ),
+          ),
         ],
-      ),
-    );
-  }
-}
-
-class _NavyPill extends StatelessWidget {
-  final String label;
-  final Color? color;
-
-  const _NavyPill(this.label, {this.color});
-
-  @override
-  Widget build(BuildContext context) {
-    final c = color ?? kNavy;
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
-      decoration: BoxDecoration(
-        color: c.withOpacity(0.1),
-        borderRadius: BorderRadius.circular(20),
-        border: Border.all(color: c.withOpacity(0.25)),
-      ),
-      child: Text(label, style: TextStyle(fontSize: 10, fontWeight: FontWeight.w800, color: c)),
-    );
-  }
-}
-
-class _BottomSheet extends StatelessWidget {
-  final String title;
-  final String emoji;
-  final Widget child;
-
-  const _BottomSheet({required this.title, required this.emoji, required this.child});
-
-  @override
-  Widget build(BuildContext context) {
-    return ClipRRect(
-      borderRadius: const BorderRadius.vertical(top: Radius.circular(30)),
-      child: BackdropFilter(
-        filter: ImageFilter.blur(sigmaX: 20, sigmaY: 20),
-        child: Container(
-          decoration: const BoxDecoration(
-            color: kGlassWhite,
-            borderRadius: BorderRadius.vertical(top: Radius.circular(30)),
-          ),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Container(
-                margin: const EdgeInsets.only(top: 12),
-                width: 40, height: 4,
-                decoration: BoxDecoration(color: kNavy.withOpacity(0.15), borderRadius: BorderRadius.circular(10)),
-              ),
-              Container(
-                margin: const EdgeInsets.fromLTRB(20, 14, 20, 0),
-                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 13),
-                decoration: BoxDecoration(
-                  gradient: const LinearGradient(colors: [kNavy, kNavyLight]),
-                  borderRadius: BorderRadius.circular(18),
-                  boxShadow: [BoxShadow(color: kNavy.withOpacity(0.3), blurRadius: 12, offset: const Offset(0, 4))],
-                ),
-                child: Row(
-                  children: [
-                    Text(emoji, style: const TextStyle(fontSize: 24)),
-                    const SizedBox(width: 10),
-                    Text(title, style: const TextStyle(
-                      fontSize: 18, fontWeight: FontWeight.w900, color: kWhite,
-                    )),
-                    const Spacer(),
-                    GestureDetector(
-                      onTap: () => Navigator.pop(context),
-                      child: Container(
-                        width: 28, height: 28,
-                        decoration: BoxDecoration(
-                          color: kWhite.withOpacity(0.15),
-                          shape: BoxShape.circle,
-                          border: Border.all(color: kWhite.withOpacity(0.3)),
-                        ),
-                        child: const Icon(Icons.close_rounded, color: kWhite, size: 14),
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-              Padding(
-                padding: EdgeInsets.fromLTRB(20, 16, 20, 20 + MediaQuery.of(context).viewInsets.bottom),
-                child: child,
-              ),
-            ],
-          ),
-        ),
       ),
     );
   }
@@ -418,100 +960,74 @@ class DashboardPage extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      backgroundColor: kBg,
-      appBar: _NavyAppBar(
-        'FBLA Connect',
-        subtitle: 'Future Business Leaders',
-        actions: [
-          GestureDetector(
-            onTap: () => showModalBottomSheet(
-              context: context,
-              backgroundColor: Colors.transparent,
-              builder: (_) => const _NotifSheet(),
-            ),
-            child: Stack(
-              clipBehavior: Clip.none,
-              children: [
-                ClipRRect(
-                  borderRadius: BorderRadius.circular(12),
-                  child: BackdropFilter(
-                    filter: ImageFilter.blur(sigmaX: 8, sigmaY: 8),
-                    child: Container(
-                      width: 40, height: 40,
-                      decoration: BoxDecoration(
-                        color: kWhite.withOpacity(0.15),
-                        borderRadius: BorderRadius.circular(12),
-                        border: Border.all(color: kWhite.withOpacity(0.3)),
-                      ),
-                      child: const Icon(Icons.notifications_rounded, color: kWhite, size: 20),
-                    ),
-                  ),
-                ),
-                Positioned(
-                  top: 7, right: 7,
-                  child: Container(
-                    width: 9, height: 9,
-                    decoration: BoxDecoration(
-                      color: kGold,
-                      shape: BoxShape.circle,
-                      border: Border.all(color: kNavy, width: 1.5),
-                      boxShadow: [BoxShadow(color: kGold.withOpacity(0.6), blurRadius: 6)],
-                    ),
-                  ),
-                ),
-              ],
-            ),
-          ),
-        ],
+    return StreamBuilder<AuthState>(
+      stream: _client.auth.onAuthStateChange,
+      initialData: AuthState(
+        AuthChangeEvent.initialSession,
+        _client.auth.currentSession,
       ),
-      body: Stack(
-        children: [
-          Positioned(
-            top: -60, right: -60,
-            child: Container(
-              width: 220, height: 220,
-              decoration: BoxDecoration(
-                shape: BoxShape.circle,
-                color: kGold.withOpacity(0.08),
+      builder: (context, snapshot) {
+        final user = _currentUser(snapshot.data);
+        final username = _usernameFromUser(user);
+        final points = _pointsFromUser(user);
+        final level = _levelFromPoints(points);
+        final initials = _initialsFromName(username);
+
+        return Scaffold(
+          backgroundColor: kBg,
+          appBar: _NavyAppBar(
+            'FBLA Connect',
+            subtitle: 'Future Business Leaders',
+            actions: [
+              IconButton(
+                onPressed: () => showModalBottomSheet(
+                  context: context,
+                  backgroundColor: Colors.transparent,
+                  builder: (_) => const _NotifSheet(),
+                ),
+                icon: const Icon(Icons.notifications_rounded, color: Colors.white),
               ),
-            ),
-          ),
-          Positioned(
-            bottom: 100, left: -80,
-            child: Container(
-              width: 260, height: 260,
-              decoration: BoxDecoration(
-                shape: BoxShape.circle,
-                color: kNavy.withOpacity(0.05),
-              ),
-            ),
-          ),
-          ListView(
-            padding: const EdgeInsets.all(20),
-            children: const [
-              _GreetingCard(),
-              SizedBox(height: 18),
-              _PointsCard(),
-              SizedBox(height: 18),
-              _StatsRow(),
-              SizedBox(height: 18),
-              _AnnouncementBanner(),
-              SizedBox(height: 18),
-              _BadgesSection(),
-              SizedBox(height: 18),
-              _ReportCTA(),
-              SizedBox(height: 12),
             ],
           ),
-        ],
-      ),
+          body: ListView(
+            padding: const EdgeInsets.all(20),
+            children: [
+              _GreetingCard(username: username, initials: initials),
+              const SizedBox(height: 18),
+              _PointsCard(points: points, level: level),
+              const SizedBox(height: 18),
+              _BlobCard(
+                onPressed: () async {
+                  await _addPoints(
+                    amount: 15,
+                    reason: 'Logged a productive action',
+                  );
+                  if (!context.mounted) return;
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(content: Text('+15 points added')),
+                  );
+                },
+              ),
+              const SizedBox(height: 18),
+              const _StatsRow(),
+              const SizedBox(height: 18),
+              const _AnnouncementBanner(),
+            ],
+          ),
+        );
+      },
     );
   }
 }
 
 class _GreetingCard extends StatelessWidget {
-  const _GreetingCard();
+  final String username;
+  final String initials;
+
+  const _GreetingCard({
+    required this.username,
+    required this.initials,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -521,206 +1037,184 @@ class _GreetingCard extends StatelessWidget {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Row(children: [
-                Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-                  decoration: BoxDecoration(
-                    color: kGoldGlass,
-                    borderRadius: BorderRadius.circular(8),
-                    border: Border.all(color: kGoldBorder),
-                  ),
-                  child: const Text('👋  Good morning!',
-                      style: TextStyle(fontSize: 11, color: kGold, fontWeight: FontWeight.w800)),
+              Text(
+                username,
+                style: const TextStyle(
+                  fontSize: 28,
+                  fontWeight: FontWeight.w900,
+                  color: kNavy,
                 ),
-              ]),
-              const SizedBox(height: 8),
-              const Text('Alex Johnson',
-                  style: TextStyle(
-                    fontSize: 28, fontWeight: FontWeight.w900, color: kNavy,
-                    letterSpacing: -0.5, height: 1.1,
-                  )),
+              ),
               const SizedBox(height: 6),
-              Row(children: [
-                Container(
-                  width: 7, height: 7,
-                  decoration: const BoxDecoration(color: kGreen, shape: BoxShape.circle),
-                ),
-                const SizedBox(width: 6),
-                const Text('Westview HS  ·  WA State',
-                    style: TextStyle(fontSize: 12, color: kMuted, fontWeight: FontWeight.w500)),
-              ]),
+              const Text(
+                'Westview HS  ·  WA State',
+                style: TextStyle(fontSize: 12, color: kMuted),
+              ),
             ],
           ),
         ),
-        _GlowAvatar(),
+        Container(
+          width: 64,
+          height: 64,
+          decoration: BoxDecoration(
+            shape: BoxShape.circle,
+            gradient: const LinearGradient(colors: [kNavy, kNavyLight]),
+            border: Border.all(color: kGold, width: 2.5),
+          ),
+          child: Center(
+            child: Text(
+              initials,
+              style: const TextStyle(
+                color: kWhite,
+                fontSize: 22,
+                fontWeight: FontWeight.w900,
+              ),
+            ),
+          ),
+        ),
       ],
     );
   }
 }
 
-class _GlowAvatar extends StatefulWidget {
-  @override
-  State<_GlowAvatar> createState() => _GlowAvatarState();
-}
+class _PointsCard extends StatelessWidget {
+  final int points;
+  final int level;
 
-class _GlowAvatarState extends State<_GlowAvatar> with SingleTickerProviderStateMixin {
-  late AnimationController _c;
-  late Animation<double> _glow;
-
-  @override
-  void initState() {
-    super.initState();
-    _c = AnimationController(vsync: this, duration: const Duration(seconds: 2))..repeat(reverse: true);
-    _glow = Tween<double>(begin: 8.0, end: 18.0).animate(CurvedAnimation(parent: _c, curve: Curves.easeInOut));
-  }
-
-  @override
-  void dispose() { _c.dispose(); super.dispose(); }
+  const _PointsCard({
+    required this.points,
+    required this.level,
+  });
 
   @override
   Widget build(BuildContext context) {
-    return AnimatedBuilder(
-      animation: _glow,
-      builder: (_, child) => Container(
-        decoration: BoxDecoration(
-          shape: BoxShape.circle,
-          boxShadow: [BoxShadow(color: kGold.withOpacity(0.35), blurRadius: _glow.value, spreadRadius: 1)],
+    final progress = ((points % 100) / 100).clamp(0.0, 1.0);
+
+    return Container(
+      padding: const EdgeInsets.all(22),
+      decoration: BoxDecoration(
+        gradient: const LinearGradient(
+          colors: [kNavy, kNavyLight],
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
         ),
-        child: child,
+        borderRadius: BorderRadius.circular(24),
       ),
-      child: Container(
-        width: 64, height: 64,
-        decoration: BoxDecoration(
-          shape: BoxShape.circle,
-          gradient: const LinearGradient(
-            colors: [kNavy, kNavyLight],
-            begin: Alignment.topLeft, end: Alignment.bottomRight,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              const _GoldPill('PRODUCTIVITY POINTS', icon: Icons.bolt_rounded),
+              const Spacer(),
+              _GoldPill('Level $level', filled: true),
+            ],
           ),
-          border: Border.all(color: kGold, width: 2.5),
-        ),
-        child: const Center(
-          child: Text('AJ', style: TextStyle(color: kWhite, fontSize: 22, fontWeight: FontWeight.w900)),
-        ),
+          const SizedBox(height: 14),
+          Text(
+            '$points',
+            style: const TextStyle(
+              fontSize: 54,
+              fontWeight: FontWeight.w900,
+              color: kWhite,
+            ),
+          ),
+          const Text(
+            'points earned so far',
+            style: TextStyle(fontSize: 12, color: Colors.white70),
+          ),
+          const SizedBox(height: 18),
+          Stack(
+            children: [
+              Container(
+                height: 10,
+                decoration: BoxDecoration(
+                  color: const Color(0x1AFFFFFF),
+                  borderRadius: BorderRadius.circular(10),
+                ),
+              ),
+              FractionallySizedBox(
+                widthFactor: progress == 0 ? 0.02 : progress,
+                child: Container(
+                  height: 10,
+                  decoration: BoxDecoration(
+                    gradient: const LinearGradient(
+                      colors: [kGold, Color(0xFFFFD97D)],
+                    ),
+                    borderRadius: BorderRadius.circular(10),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ],
       ),
     );
   }
 }
 
-class _PointsCard extends StatefulWidget {
-  const _PointsCard();
-  @override
-  State<_PointsCard> createState() => _PointsCardState();
-}
+class _BlobCard extends StatelessWidget {
+  final Future<void> Function() onPressed;
 
-class _PointsCardState extends State<_PointsCard> with TickerProviderStateMixin {
-  late AnimationController _barCtrl;
-  late AnimationController _countCtrl;
-  late Animation<double> _bar;
-  late Animation<double> _count;
-
-  @override
-  void initState() {
-    super.initState();
-    _barCtrl = AnimationController(vsync: this, duration: const Duration(milliseconds: 1400));
-    _countCtrl = AnimationController(vsync: this, duration: const Duration(milliseconds: 1200));
-    _bar = CurvedAnimation(parent: _barCtrl, curve: Curves.easeOutCubic);
-    _count = CurvedAnimation(parent: _countCtrl, curve: Curves.easeOutCubic);
-    Future.delayed(const Duration(milliseconds: 400), () {
-      if (mounted) { _barCtrl.forward(); _countCtrl.forward(); }
-    });
-  }
-
-  @override
-  void dispose() { _barCtrl.dispose(); _countCtrl.dispose(); super.dispose(); }
+  const _BlobCard({required this.onPressed});
 
   @override
   Widget build(BuildContext context) {
-    return ClipRRect(
-      borderRadius: BorderRadius.circular(24),
-      child: BackdropFilter(
-        filter: ImageFilter.blur(sigmaX: 16, sigmaY: 16),
-        child: Container(
-          decoration: BoxDecoration(
-            gradient: const LinearGradient(
-              colors: [kNavy, Color(0xFF0F3070)],
-              begin: Alignment.topLeft, end: Alignment.bottomRight,
+    return _GlassCard(
+      child: Row(
+        children: [
+          ClipRRect(
+            borderRadius: BorderRadius.circular(16),
+            child: Image.asset(
+              kBlobAsset,
+              width: 90,
+              height: 90,
+              fit: BoxFit.cover,
+              errorBuilder: (_, __, ___) {
+                return Container(
+                  width: 90,
+                  height: 90,
+                  color: kNavy.withOpacity(0.08),
+                  child: const Icon(
+                    Icons.image_outlined,
+                    color: kNavy,
+                    size: 32,
+                  ),
+                );
+              },
             ),
-            borderRadius: BorderRadius.circular(24),
-            border: Border.all(color: kGold.withOpacity(0.3)),
-            boxShadow: [
-              BoxShadow(color: kNavy.withOpacity(0.35), blurRadius: 30, offset: const Offset(0, 12)),
-              BoxShadow(color: kGold.withOpacity(0.1), blurRadius: 20, offset: const Offset(0, 4)),
-            ],
           ),
-          padding: const EdgeInsets.all(22),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Row(children: [
-                _GoldPill('CHAPTER POINTS', icon: Icons.bolt_rounded),
-                const Spacer(),
-                _GoldPill('🏆 State Qualifier', filled: true),
-              ]),
-              const SizedBox(height: 14),
-              AnimatedBuilder(
-                animation: _count,
-                builder: (_, __) {
-                  final val = (_count.value * 2847).round();
-                  return Text(
-                    val.toString().replaceAllMapped(RegExp(r'\B(?=(\d{3})+(?!\d))'), (m) => ','),
-                    style: const TextStyle(
-                      fontSize: 54, fontWeight: FontWeight.w900, color: kWhite,
-                      letterSpacing: -2, height: 1,
-                    ),
-                  );
-                },
-              ),
-              const Text('points earned this year',
-                  style: TextStyle(fontSize: 12, color: Color(0x99FFFFFF), fontWeight: FontWeight.w500)),
-              const SizedBox(height: 18),
-              Stack(children: [
-                Container(
-                  height: 10,
-                  decoration: BoxDecoration(
-                    color: kWhite.withOpacity(0.1),
-                    borderRadius: BorderRadius.circular(10),
+          const SizedBox(width: 14),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text(
+                  'Productivity Buddy',
+                  style: TextStyle(
+                    fontSize: 16,
+                    fontWeight: FontWeight.w900,
+                    color: kNavy,
                   ),
                 ),
-                AnimatedBuilder(
-                  animation: _bar,
-                  builder: (_, __) => FractionallySizedBox(
-                    widthFactor: _bar.value * 0.72,
-                    child: Container(
-                      height: 10,
-                      decoration: BoxDecoration(
-                        gradient: const LinearGradient(colors: [kGold, kGoldLight]),
-                        borderRadius: BorderRadius.circular(10),
-                        boxShadow: [BoxShadow(color: kGold.withOpacity(0.7), blurRadius: 8)],
-                      ),
-                    ),
-                  ),
+                const SizedBox(height: 6),
+                const Text(
+                  'Tap below whenever you finish something productive and we will add points to your level.',
+                  style: TextStyle(fontSize: 12, color: kMuted, height: 1.4),
                 ),
-              ]),
-              const SizedBox(height: 10),
-              Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
-                Row(children: [
-                  Container(
-                    width: 8, height: 8,
-                    decoration: const BoxDecoration(
-                      gradient: LinearGradient(colors: [kGold, kGoldLight]),
-                      shape: BoxShape.circle,
-                    ),
+                const SizedBox(height: 12),
+                FilledButton.icon(
+                  onPressed: onPressed,
+                  style: FilledButton.styleFrom(
+                    backgroundColor: kNavy,
                   ),
-                  const SizedBox(width: 6),
-                  const Text('72% to Nationals 🎯',
-                      style: TextStyle(fontSize: 11, color: Color(0xAAFFFFFF), fontWeight: FontWeight.w600)),
-                ]),
-                const Text('Need 1,103 more',
-                    style: TextStyle(fontSize: 11, color: Color(0x66FFFFFF))),
-              ]),
-            ],
+                  icon: const Icon(Icons.add_task_rounded, color: Colors.white),
+                  label: const Text('Add Productive Action'),
+                ),
+              ],
+            ),
           ),
-        ),
+        ],
       ),
     );
   }
@@ -731,82 +1225,63 @@ class _StatsRow extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Row(children: const [
-      Expanded(child: _StatTile('🏆', '12', 'Events', kGold)),
-      SizedBox(width: 10),
-      Expanded(child: _StatTile('👥', '34', 'Members', kNavy)),
-      SizedBox(width: 10),
-      Expanded(child: _StatTile('⭐', '5', 'Awards', kTeal)),
-    ]);
+    return const Row(
+      children: [
+        Expanded(child: _StatTile('🏆', '12', 'Events', kGold)),
+        SizedBox(width: 10),
+        Expanded(child: _StatTile('👥', '34', 'Members', kNavy)),
+        SizedBox(width: 10),
+        Expanded(child: _StatTile('⭐', '5', 'Awards', kTeal)),
+      ],
+    );
   }
 }
 
-class _StatTile extends StatefulWidget {
-  final String emoji, value, label;
+class _StatTile extends StatelessWidget {
+  final String emoji;
+  final String value;
+  final String label;
   final Color color;
+
   const _StatTile(this.emoji, this.value, this.label, this.color);
-  @override
-  State<_StatTile> createState() => _StatTileState();
-}
-
-class _StatTileState extends State<_StatTile> with SingleTickerProviderStateMixin {
-  late AnimationController _c;
-
-  @override
-  void initState() {
-    super.initState();
-    _c = AnimationController(vsync: this, duration: const Duration(milliseconds: 130),
-        lowerBound: 0.93, upperBound: 1.0, value: 1.0);
-  }
-
-  @override
-  void dispose() { _c.dispose(); super.dispose(); }
 
   @override
   Widget build(BuildContext context) {
-    return GestureDetector(
-      onTapDown: (_) => _c.reverse(),
-      onTapUp: (_) => _c.forward(),
-      onTapCancel: () => _c.forward(),
-      child: ScaleTransition(
-        scale: _c,
-        child: ClipRRect(
-          borderRadius: BorderRadius.circular(20),
-          child: BackdropFilter(
-            filter: ImageFilter.blur(sigmaX: 10, sigmaY: 10),
-            child: Container(
-              padding: const EdgeInsets.symmetric(vertical: 18, horizontal: 8),
-              decoration: BoxDecoration(
-                color: kGlassCard,
-                borderRadius: BorderRadius.circular(20),
-                border: Border.all(color: widget.color.withOpacity(0.2)),
-                boxShadow: [
-                  BoxShadow(color: widget.color.withOpacity(0.08), blurRadius: 16, offset: const Offset(0, 4)),
-                ],
-              ),
-              child: Column(children: [
-                Container(
-                  width: 44, height: 44,
-                  decoration: BoxDecoration(
-                    color: widget.color.withOpacity(0.12),
-                    shape: BoxShape.circle,
-                    border: Border.all(color: widget.color.withOpacity(0.25)),
-                  ),
-                  child: Center(child: Text(widget.emoji, style: const TextStyle(fontSize: 20))),
-                ),
-                const SizedBox(height: 10),
-                Text(widget.value, style: TextStyle(
-                  fontSize: 26, fontWeight: FontWeight.w900,
-                  color: widget.color, letterSpacing: -0.5,
-                )),
-                const SizedBox(height: 2),
-                Text(widget.label, style: const TextStyle(
-                  fontSize: 10, color: kMuted, fontWeight: FontWeight.w700,
-                )),
-              ]),
+    return _GlassCard(
+      padding: const EdgeInsets.symmetric(vertical: 18, horizontal: 8),
+      child: Column(
+        children: [
+          Container(
+            width: 44,
+            height: 44,
+            decoration: BoxDecoration(
+              color: color.withOpacity(0.12),
+              shape: BoxShape.circle,
+              border: Border.all(color: color.withOpacity(0.25)),
+            ),
+            child: Center(
+              child: Text(emoji, style: const TextStyle(fontSize: 20)),
             ),
           ),
-        ),
+          const SizedBox(height: 10),
+          Text(
+            value,
+            style: TextStyle(
+              fontSize: 26,
+              fontWeight: FontWeight.w900,
+              color: color,
+            ),
+          ),
+          const SizedBox(height: 2),
+          Text(
+            label,
+            style: const TextStyle(
+              fontSize: 10,
+              color: kMuted,
+              fontWeight: FontWeight.w700,
+            ),
+          ),
+        ],
       ),
     );
   }
@@ -817,225 +1292,483 @@ class _AnnouncementBanner extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return ClipRRect(
-      borderRadius: BorderRadius.circular(20),
-      child: BackdropFilter(
-        filter: ImageFilter.blur(sigmaX: 10, sigmaY: 10),
-        child: Container(
-          padding: const EdgeInsets.all(16),
-          decoration: BoxDecoration(
-            color: kBgWarm.withOpacity(0.85),
-            borderRadius: BorderRadius.circular(20),
-            border: Border.all(color: kGoldBorder),
-            boxShadow: [BoxShadow(color: kGold.withOpacity(0.12), blurRadius: 16, offset: const Offset(0, 4))],
+    return _GlassCard(
+      child: Row(
+        children: [
+          Container(
+            width: 48,
+            height: 48,
+            decoration: BoxDecoration(
+              gradient: const LinearGradient(
+                colors: [kGold, Color(0xFFFFD97D)],
+              ),
+              borderRadius: BorderRadius.circular(16),
+            ),
+            child: const Center(
+              child: Text('📣', style: TextStyle(fontSize: 22)),
+            ),
           ),
-          child: Row(children: [
-            Container(
-              width: 48, height: 48,
-              decoration: BoxDecoration(
-                gradient: const LinearGradient(colors: [kGold, kGoldLight]),
-                borderRadius: BorderRadius.circular(16),
-                boxShadow: [BoxShadow(color: kGold.withOpacity(0.4), blurRadius: 10)],
-              ),
-              child: const Center(child: Text('📣', style: TextStyle(fontSize: 22))),
+          const SizedBox(width: 14),
+          const Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  'State Conf Registration Open! 🎉',
+                  style: TextStyle(
+                    fontSize: 13,
+                    fontWeight: FontWeight.w800,
+                    color: kNavy,
+                  ),
+                ),
+                SizedBox(height: 4),
+                Text(
+                  'Deadline April 30 — don\'t miss your spot!',
+                  style: TextStyle(fontSize: 11, color: kMuted),
+                ),
+              ],
             ),
-            const SizedBox(width: 14),
-            const Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-              Text('State Conf Registration Open! 🎉',
-                  style: TextStyle(fontSize: 13, fontWeight: FontWeight.w800, color: kNavy)),
-              SizedBox(height: 4),
-              Text('Deadline April 30 — don\'t miss your spot!',
-                  style: TextStyle(fontSize: 11, color: kMuted, height: 1.4)),
-            ])),
-            Container(
-              width: 32, height: 32,
-              decoration: BoxDecoration(
-                color: kGold,
-                borderRadius: BorderRadius.circular(10),
-                boxShadow: [BoxShadow(color: kGold.withOpacity(0.4), blurRadius: 8)],
-              ),
-              child: const Icon(Icons.arrow_forward_ios_rounded, color: kNavy, size: 13),
-            ),
-          ]),
-        ),
+          ),
+        ],
       ),
     );
   }
 }
 
-class _BadgesSection extends StatelessWidget {
-  const _BadgesSection();
+class EventsPage extends StatelessWidget {
+  const EventsPage({super.key});
 
-  static const _badges = [
-    ('🏅', 'Top Coder',  kGold,   true),
-    ('🎤', 'Speaker',    kNavy,   true),
-    ('📋', 'Officer',    kTeal,   true),
-    ('💯', '100 Hrs',    kGold,   true),
-    ('🔮', 'Mystery',    kMuted,  false),
-    ('🌟', 'Star',       kMuted,  false),
+  static const _events = [
+    ('Chapter Meeting', 'Room 204 · 3:30 PM', 'Apr 24', '📌', kGreen, 10),
+    ('Leadership Workshop', 'Library B · 4:00 PM', 'Apr 28', '💡', kNavy, 15),
+    ('State Conference', 'Seattle Convention Ctr', 'May 03', '🗺️', kGold, 25),
   ];
 
   @override
   Widget build(BuildContext context) {
-    return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-      Row(children: [
-        const Text('ACHIEVEMENTS', style: TextStyle(
-          fontSize: 10, fontWeight: FontWeight.w800, color: kMuted, letterSpacing: 2,
-        )),
-        const SizedBox(width: 8),
-        _NavyPill('4 / 6', color: kGreen),
-      ]),
-      const SizedBox(height: 14),
-      SizedBox(
-        height: 100,
-        child: ListView.separated(
-          scrollDirection: Axis.horizontal,
-          itemCount: _badges.length,
-          separatorBuilder: (_, __) => const SizedBox(width: 12),
-          itemBuilder: (_, i) {
-            final b = _badges[i];
-            return _Badge(emoji: b.$1, label: b.$2, color: b.$3, unlocked: b.$4);
-          },
-        ),
-      ),
-    ]);
-  }
-}
-
-class _Badge extends StatefulWidget {
-  final String emoji, label;
-  final Color color;
-  final bool unlocked;
-  const _Badge({required this.emoji, required this.label, required this.color, required this.unlocked});
-  @override
-  State<_Badge> createState() => _BadgeState();
-}
-
-class _BadgeState extends State<_Badge> with SingleTickerProviderStateMixin {
-  late AnimationController _c;
-
-  @override
-  void initState() {
-    super.initState();
-    _c = AnimationController(vsync: this, duration: const Duration(milliseconds: 120),
-        lowerBound: 0.88, upperBound: 1.0, value: 1.0);
-  }
-
-  @override
-  void dispose() { _c.dispose(); super.dispose(); }
-
-  @override
-  Widget build(BuildContext context) {
-    return GestureDetector(
-      onTapDown: (_) => _c.reverse(),
-      onTapUp: (_) => _c.forward(),
-      onTapCancel: () => _c.forward(),
-      child: ScaleTransition(
-        scale: _c,
-        child: Column(mainAxisSize: MainAxisSize.min, children: [
-          ClipOval(
-            child: BackdropFilter(
-              filter: ImageFilter.blur(sigmaX: 8, sigmaY: 8),
-              child: Container(
-                width: 64, height: 64,
-                decoration: BoxDecoration(
-                  shape: BoxShape.circle,
-                  color: widget.unlocked ? widget.color.withOpacity(0.12) : kBorder.withOpacity(0.3),
-                  border: Border.all(
-                    color: widget.unlocked ? widget.color.withOpacity(0.5) : kBorder,
-                    width: widget.unlocked ? 2 : 1,
-                  ),
-                  boxShadow: widget.unlocked
-                      ? [BoxShadow(color: widget.color.withOpacity(0.25), blurRadius: 12, spreadRadius: 1)]
-                      : null,
-                ),
-                child: Center(
-                  child: Opacity(
-                    opacity: widget.unlocked ? 1.0 : 0.25,
-                    child: Text(widget.emoji, style: const TextStyle(fontSize: 26)),
-                  ),
-                ),
-              ),
+    return Scaffold(
+      backgroundColor: kBg,
+      appBar: const _NavyAppBar('Events', subtitle: 'Chapter Calendar'),
+      body: ListView(
+        padding: const EdgeInsets.all(20),
+        children: _events.map((event) {
+          return Padding(
+            padding: const EdgeInsets.only(bottom: 12),
+            child: _EventCard(
+              title: event.$1,
+              location: event.$2,
+              date: event.$3,
+              emoji: event.$4,
+              color: event.$5,
+              points: event.$6,
             ),
-          ),
-          const SizedBox(height: 6),
-          Text(widget.label, style: TextStyle(
-            fontSize: 9, fontWeight: FontWeight.w700,
-            color: widget.unlocked ? kNavy : kMuted,
-          )),
-        ]),
+          );
+        }).toList(),
       ),
     );
   }
 }
 
-class _ReportCTA extends StatefulWidget {
-  const _ReportCTA();
+class _EventCard extends StatelessWidget {
+  final String title;
+  final String location;
+  final String date;
+  final String emoji;
+  final Color color;
+  final int points;
+
+  const _EventCard({
+    required this.title,
+    required this.location,
+    required this.date,
+    required this.emoji,
+    required this.color,
+    required this.points,
+  });
+
   @override
-  State<_ReportCTA> createState() => _ReportCTAState();
+  Widget build(BuildContext context) {
+    return _GlassCard(
+      child: Row(
+        children: [
+          Container(
+            width: 56,
+            height: 56,
+            decoration: BoxDecoration(
+              color: color.withOpacity(0.18),
+              borderRadius: BorderRadius.circular(16),
+            ),
+            child: Center(
+              child: Text(emoji, style: const TextStyle(fontSize: 24)),
+            ),
+          ),
+          const SizedBox(width: 14),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  title,
+                  style: const TextStyle(
+                    fontSize: 14,
+                    fontWeight: FontWeight.w800,
+                    color: kNavy,
+                  ),
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  location,
+                  style: const TextStyle(fontSize: 11, color: kMuted),
+                ),
+                const SizedBox(height: 8),
+                TextButton(
+                  onPressed: () async {
+                    await _addPoints(
+                      amount: points,
+                      reason: 'Completed $title',
+                    );
+                    if (!context.mounted) return;
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      SnackBar(content: Text('+$points points for $title')),
+                    );
+                  },
+                  child: Text('Mark Complete (+$points)'),
+                ),
+              ],
+            ),
+          ),
+          _GoldPill(date, filled: false),
+        ],
+      ),
+    );
+  }
 }
 
-class _ReportCTAState extends State<_ReportCTA> with SingleTickerProviderStateMixin {
-  late AnimationController _c;
-  bool _pressed = false;
+class ReportsPage extends StatelessWidget {
+  const ReportsPage({super.key});
+
+  static const _reports = [
+    (
+      'Mobile App Development',
+      'Full chapter activity summary',
+      'https://docs.google.com/document/d/mobile-app-developement_materials',
+      20,
+    ),
+    (
+      'Digital Video Production',
+      'Budget and expenses',
+      'https://docs.google.com/document/d/digital-video-production_materials',
+      20,
+    ),
+    (
+      'Public Speaking',
+      'Active members and dues status',
+      'https://docs.google.com/document/d/public-speaking_materials',
+      20,
+    ),
+  ];
 
   @override
-  void initState() {
-    super.initState();
-    _c = AnimationController(vsync: this, duration: const Duration(milliseconds: 900))..repeat(reverse: true);
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: kBg,
+      appBar: const _NavyAppBar('Reports', subtitle: 'Chapter Documents'),
+      body: ListView(
+        padding: const EdgeInsets.all(20),
+        children: _reports.map((report) {
+          return Padding(
+            padding: const EdgeInsets.only(bottom: 12),
+            child: _SimpleReportCard(
+              title: report.$1,
+              desc: report.$2,
+              fakeLink: report.$3,
+              points: report.$4,
+            ),
+          );
+        }).toList(),
+      ),
+    );
   }
+}
 
-  @override
-  void dispose() { _c.dispose(); super.dispose(); }
+class _SimpleReportCard extends StatelessWidget {
+  final String title;
+  final String desc;
+  final String fakeLink;
+  final int points;
+
+  const _SimpleReportCard({
+    required this.title,
+    required this.desc,
+    required this.fakeLink,
+    required this.points,
+  });
 
   @override
   Widget build(BuildContext context) {
     return GestureDetector(
-      onTapDown: (_) => setState(() => _pressed = true),
-      onTapUp: (_) {
-        setState(() => _pressed = false);
-        showModalBottomSheet(
-          context: context, backgroundColor: Colors.transparent,
-          isScrollControlled: true, builder: (_) => const _BlockReportSheet(),
+      onTap: () async {
+        await _addPoints(
+          amount: points,
+          reason: 'Opened $title',
+        );
+
+        if (!context.mounted) return;
+
+        showDialog<void>(
+          context: context,
+          builder: (_) => AlertDialog(
+            title: Text(title),
+            content: SelectableText('$fakeLink\n\n+$points points added'),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(context),
+                child: const Text('Close'),
+              ),
+            ],
+          ),
         );
       },
-      onTapCancel: () => setState(() => _pressed = false),
-      child: AnimatedScale(
-        scale: _pressed ? 0.96 : 1.0,
-        duration: const Duration(milliseconds: 120),
-        child: AnimatedBuilder(
-          animation: _c,
-          builder: (_, child) => Container(
-            height: 58,
-            decoration: BoxDecoration(
-              gradient: const LinearGradient(colors: [kNavy, kNavyLight]),
-              borderRadius: BorderRadius.circular(18),
-              border: Border.all(
-                color: Color.lerp(kGold.withOpacity(0.3), kGold.withOpacity(0.8), _c.value)!,
-                width: 1.5,
-              ),
-              boxShadow: [
-                BoxShadow(
-                  color: kNavy.withOpacity(0.3 + _c.value * 0.15),
-                  blurRadius: 16, offset: const Offset(0, 6),
-                ),
-                BoxShadow(
-                  color: kGold.withOpacity(0.08 + _c.value * 0.12),
-                  blurRadius: 20, offset: const Offset(0, 2),
-                ),
-              ],
+      child: _GlassCard(
+        child: Row(
+          children: [
+            Image.asset(
+              kBlobAsset,
+              width: 48,
+              height: 48,
+              fit: BoxFit.cover,
+              errorBuilder: (_, __, ___) {
+                return const Icon(Icons.description_rounded, size: 36, color: kNavy);
+              },
             ),
-            child: child,
-          ),
-          child: const Row(mainAxisAlignment: MainAxisAlignment.center, children: [
-            Text('📊', style: TextStyle(fontSize: 20)),
-            SizedBox(width: 10),
-            Text('Generate Block Report',
-                style: TextStyle(fontSize: 16, fontWeight: FontWeight.w900, color: kWhite, letterSpacing: 0.1)),
-            SizedBox(width: 8),
-            Icon(Icons.arrow_forward_rounded, color: kGold, size: 18),
-          ]),
+            const SizedBox(width: 14),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    title,
+                    style: const TextStyle(
+                      fontSize: 14,
+                      fontWeight: FontWeight.w800,
+                      color: kNavy,
+                    ),
+                  ),
+                  const SizedBox(height: 3),
+                  Text(
+                    desc,
+                    style: const TextStyle(fontSize: 11, color: kMuted),
+                  ),
+                ],
+              ),
+            ),
+            Text(
+              '+$points',
+              style: const TextStyle(
+                fontWeight: FontWeight.w800,
+                color: kGreen,
+              ),
+            ),
+          ],
         ),
+      ),
+    );
+  }
+}
+
+class ProfilePage extends StatelessWidget {
+  const ProfilePage({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    return StreamBuilder<AuthState>(
+      stream: _client.auth.onAuthStateChange,
+      initialData: AuthState(
+        AuthChangeEvent.initialSession,
+        _client.auth.currentSession,
+      ),
+      builder: (context, snapshot) {
+        final user = _currentUser(snapshot.data);
+        final username = _usernameFromUser(user);
+        final points = _pointsFromUser(user);
+        final level = _levelFromPoints(points);
+        final initials = _initialsFromName(username);
+        final lastActivity =
+            (user?.userMetadata?['last_activity'] as String?) ?? 'No activity yet';
+
+        return Scaffold(
+          backgroundColor: kBg,
+          appBar: const _NavyAppBar('My Profile', subtitle: 'Member Details'),
+          body: ListView(
+            padding: const EdgeInsets.all(20),
+            children: [
+              Center(
+                child: Column(
+                  children: [
+                    Container(
+                      width: 90,
+                      height: 90,
+                      decoration: BoxDecoration(
+                        shape: BoxShape.circle,
+                        gradient: const LinearGradient(
+                          colors: [kNavy, kNavyLight],
+                        ),
+                        border: Border.all(color: kGold, width: 3),
+                      ),
+                      child: Center(
+                        child: Text(
+                          initials,
+                          style: const TextStyle(
+                            color: kWhite,
+                            fontSize: 22,
+                            fontWeight: FontWeight.w900,
+                          ),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(height: 16),
+                    Text(
+                      username,
+                      style: const TextStyle(
+                        fontSize: 28,
+                        fontWeight: FontWeight.w900,
+                        color: kNavy,
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                    _GoldPill('Level $level · $points pts', filled: true),
+                    const SizedBox(height: 18),
+                    Image.asset(
+                      kBlobAsset,
+                      height: 120,
+                      fit: BoxFit.contain,
+                      errorBuilder: (_, __, ___) {
+                        return const SizedBox.shrink();
+                      },
+                    ),
+                    const SizedBox(height: 22),
+                    _InfoSection(
+                      'Chapter Info',
+                      [
+                        const _InfoRow('School', 'ABC High School', kNavy),
+                        const _InfoRow('State', 'Washington', kTeal),
+                        _InfoRow('Last Activity', lastActivity, kGreen),
+                      ],
+                    ),
+                    const SizedBox(height: 16),
+                    GestureDetector(
+                      onTap: () async {
+                        await _client.auth.signOut();
+                      },
+                      child: Container(
+                        height: 52,
+                        decoration: BoxDecoration(
+                          color: kRed.withOpacity(0.07),
+                          borderRadius: BorderRadius.circular(16),
+                          border: Border.all(color: kRed.withOpacity(0.3)),
+                        ),
+                        child: const Row(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            Icon(Icons.logout_rounded, color: kRed, size: 18),
+                            SizedBox(width: 8),
+                            Text(
+                              'Sign Out',
+                              style: TextStyle(
+                                color: kRed,
+                                fontWeight: FontWeight.w800,
+                                fontSize: 15,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+}
+
+class _InfoSection extends StatelessWidget {
+  final String title;
+  final List<_InfoRow> rows;
+
+  const _InfoSection(this.title, this.rows, {super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          title.toUpperCase(),
+          style: const TextStyle(
+            fontSize: 10,
+            fontWeight: FontWeight.w800,
+            color: kMuted,
+            letterSpacing: 2,
+          ),
+        ),
+        const SizedBox(height: 10),
+        Container(
+          decoration: BoxDecoration(
+            color: kGlassCard,
+            borderRadius: BorderRadius.circular(20),
+            border: Border.all(color: kBorder),
+          ),
+          child: Column(children: rows),
+        ),
+      ],
+    );
+  }
+}
+
+class _InfoRow extends StatelessWidget {
+  final String label;
+  final String value;
+  final Color color;
+
+  const _InfoRow(this.label, this.value, this.color, {super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+      child: Row(
+        children: [
+          Container(
+            width: 32,
+            height: 32,
+            decoration: BoxDecoration(
+              color: color.withOpacity(0.1),
+              borderRadius: BorderRadius.circular(10),
+              border: Border.all(color: color.withOpacity(0.2)),
+            ),
+          ),
+          const SizedBox(width: 12),
+          Text(
+            label,
+            style: const TextStyle(fontSize: 13, color: kMuted),
+          ),
+          const Spacer(),
+          Flexible(
+            child: Text(
+              value,
+              textAlign: TextAlign.right,
+              style: TextStyle(
+                fontSize: 13,
+                fontWeight: FontWeight.w800,
+                color: color,
+              ),
+            ),
+          ),
+        ],
       ),
     );
   }
@@ -1046,699 +1779,13 @@ class _NotifSheet extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return _BottomSheet(
-      title: 'Notifications',
-      emoji: '🔔',
-      child: Column(children: const [
-        _NotifItem('📣', 'New Announcement', 'State conf entries due April 30!', kGold),
-        SizedBox(height: 10),
-        _NotifItem('⚡', 'Points Updated', '+120 pts for mock interview event.', kNavy),
-        SizedBox(height: 10),
-        _NotifItem('🏆', 'Achievement Unlocked', 'You earned "100 Service Hours"!', kGreen),
-      ]),
-    );
-  }
-}
-
-class _NotifItem extends StatelessWidget {
-  final String emoji, title, body;
-  final Color color;
-  const _NotifItem(this.emoji, this.title, this.body, this.color);
-
-  @override
-  Widget build(BuildContext context) {
-    return ClipRRect(
-      borderRadius: BorderRadius.circular(16),
-      child: BackdropFilter(
-        filter: ImageFilter.blur(sigmaX: 8, sigmaY: 8),
-        child: Container(
-          padding: const EdgeInsets.all(14),
-          decoration: BoxDecoration(
-            color: color.withOpacity(0.07),
-            borderRadius: BorderRadius.circular(16),
-            border: Border.all(color: color.withOpacity(0.2)),
-          ),
-          child: Row(children: [
-            Container(
-              width: 40, height: 40,
-              decoration: BoxDecoration(
-                color: color.withOpacity(0.12),
-                shape: BoxShape.circle,
-                border: Border.all(color: color.withOpacity(0.25)),
-              ),
-              child: Center(child: Text(emoji, style: const TextStyle(fontSize: 18))),
-            ),
-            const SizedBox(width: 12),
-            Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-              Text(title, style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w800, color: kNavy)),
-              const SizedBox(height: 3),
-              Text(body, style: const TextStyle(fontSize: 11, color: kMuted, height: 1.4)),
-            ])),
-            Container(
-              width: 7, height: 7,
-              decoration: BoxDecoration(
-                color: color, shape: BoxShape.circle,
-                boxShadow: [BoxShadow(color: color.withOpacity(0.5), blurRadius: 6)],
-              ),
-            ),
-          ]),
-        ),
+    return Container(
+      padding: const EdgeInsets.all(20),
+      decoration: const BoxDecoration(
+        color: kGlassWhite,
+        borderRadius: BorderRadius.vertical(top: Radius.circular(30)),
       ),
-    );
-  }
-}
-
-class _BlockReportSheet extends StatelessWidget {
-  const _BlockReportSheet();
-
-  static const _stats = [
-    ('Total Members', '34', '👥', kNavy),
-    ('Chapter Points', '2,847', '⚡', kGold),
-    ('Competitive Events', '12', '🏆', kTeal),
-    ('Service Hours', '416', '💚', kGreen),
-    ('State Qualifiers', '8', '🎯', kNavy),
-    ('Meetings Held', '22', '📅', kGold),
-  ];
-
-  @override
-  Widget build(BuildContext context) {
-    return _BottomSheet(
-      title: 'Block Report',
-      emoji: '📊',
-      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-        const Text('Westview HS Chapter · Spring 2025',
-            style: TextStyle(fontSize: 12, color: kMuted, fontWeight: FontWeight.w600)),
-        const SizedBox(height: 16),
-        GridView.builder(
-          shrinkWrap: true,
-          physics: const NeverScrollableScrollPhysics(),
-          gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-            crossAxisCount: 2, childAspectRatio: 2.0,
-            crossAxisSpacing: 10, mainAxisSpacing: 10,
-          ),
-          itemCount: _stats.length,
-          itemBuilder: (_, i) {
-            final s = _stats[i];
-            final color = s.$4 as Color;
-            return ClipRRect(
-              borderRadius: BorderRadius.circular(16),
-              child: BackdropFilter(
-                filter: ImageFilter.blur(sigmaX: 8, sigmaY: 8),
-                child: Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
-                  decoration: BoxDecoration(
-                    color: color.withOpacity(0.07),
-                    borderRadius: BorderRadius.circular(16),
-                    border: Border.all(color: color.withOpacity(0.2)),
-                  ),
-                  child: Row(children: [
-                    Text(s.$3, style: const TextStyle(fontSize: 22)),
-                    const SizedBox(width: 10),
-                    Column(crossAxisAlignment: CrossAxisAlignment.start, mainAxisAlignment: MainAxisAlignment.center, children: [
-                      Text(s.$2, style: TextStyle(
-                        fontSize: 20, fontWeight: FontWeight.w900, color: color, height: 1,
-                      )),
-                      Text(s.$1, style: const TextStyle(
-                        fontSize: 9, color: kMuted, fontWeight: FontWeight.w700,
-                      )),
-                    ]),
-                  ]),
-                ),
-              ),
-            );
-          },
-        ),
-        const SizedBox(height: 16),
-        GestureDetector(
-          onTap: () => Navigator.pop(context),
-          child: Container(
-            width: double.infinity, height: 52,
-            decoration: BoxDecoration(
-              gradient: const LinearGradient(colors: [kNavy, kNavyLight]),
-              borderRadius: BorderRadius.circular(16),
-              border: Border.all(color: kGoldBorder),
-              boxShadow: [BoxShadow(color: kNavy.withOpacity(0.3), blurRadius: 12, offset: const Offset(0, 4))],
-            ),
-            child: const Row(mainAxisAlignment: MainAxisAlignment.center, children: [
-              Text('📄', style: TextStyle(fontSize: 18)),
-              SizedBox(width: 8),
-              Text('Export PDF', style: TextStyle(
-                fontSize: 15, fontWeight: FontWeight.w900, color: kWhite,
-              )),
-            ]),
-          ),
-        ),
-      ]),
-    );
-  }
-}
-
-class EventsPage extends StatelessWidget {
-  const EventsPage({super.key});
-
-  static const _events = [
-    _Ev('Chapter Meeting', 'Room 204 · 3:30 PM', 'Apr', '24', '📌', 'Today', kGreen),
-    _Ev('Leadership Workshop', 'Library B · 4:00 PM', 'Apr', '28', '💡', 'Upcoming', kNavy),
-    _Ev('State Conference', 'Seattle Convention Ctr', 'May', '03', '🗺️', 'Reg. Open', kGold),
-    _Ev('Mock Interview Day', 'Gym · All Day', 'May', '10', '🎤', 'Upcoming', kTeal),
-    _Ev('NLC — Atlanta, GA', 'National Leadership Conf', 'Jun', '21', '✈️', 'Nationals', kRed),
-  ];
-
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      backgroundColor: kBg,
-      appBar: _NavyAppBar('Events', subtitle: 'Chapter Calendar'),
-      body: Stack(
-        children: [
-          Positioned(top: -40, right: -40,
-            child: Container(width: 180, height: 180, decoration: BoxDecoration(
-              shape: BoxShape.circle, color: kGold.withOpacity(0.07),
-            ))),
-          ListView(
-            padding: const EdgeInsets.all(20),
-            children: [
-              const Text('UPCOMING EVENTS', style: TextStyle(
-                fontSize: 10, fontWeight: FontWeight.w800, color: kMuted, letterSpacing: 2,
-              )),
-              const SizedBox(height: 16),
-              ..._events.asMap().entries.map((e) => _SlideInEventCard(ev: e.value, index: e.key)),
-            ],
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-class _Ev {
-  final String title, location, month, day, emoji, badge;
-  final Color color;
-  const _Ev(this.title, this.location, this.month, this.day, this.emoji, this.badge, this.color);
-}
-
-class _SlideInEventCard extends StatefulWidget {
-  final _Ev ev;
-  final int index;
-  const _SlideInEventCard({required this.ev, required this.index});
-  @override
-  State<_SlideInEventCard> createState() => _SlideInEventCardState();
-}
-
-class _SlideInEventCardState extends State<_SlideInEventCard> with SingleTickerProviderStateMixin {
-  late AnimationController _c;
-  late Animation<Offset> _slide;
-  late Animation<double> _fade;
-
-  @override
-  void initState() {
-    super.initState();
-    _c = AnimationController(vsync: this, duration: const Duration(milliseconds: 450));
-    _slide = Tween<Offset>(begin: const Offset(0.07, 0), end: Offset.zero)
-        .animate(CurvedAnimation(parent: _c, curve: Curves.easeOutCubic));
-    _fade = CurvedAnimation(parent: _c, curve: Curves.easeOut);
-    Future.delayed(Duration(milliseconds: 70 * widget.index), () { if (mounted) _c.forward(); });
-  }
-
-  @override
-  void dispose() { _c.dispose(); super.dispose(); }
-
-  @override
-  Widget build(BuildContext context) {
-    return FadeTransition(
-      opacity: _fade,
-      child: SlideTransition(
-        position: _slide,
-        child: Padding(
-          padding: const EdgeInsets.only(bottom: 12),
-          child: _GlassCard(
-            tint: kGlassCard,
-            child: Row(children: [
-              Container(
-                width: 56, height: 56,
-                decoration: BoxDecoration(
-                  gradient: LinearGradient(
-                    colors: [widget.ev.color, widget.ev.color.withOpacity(0.7)],
-                    begin: Alignment.topLeft, end: Alignment.bottomRight,
-                  ),
-                  borderRadius: BorderRadius.circular(16),
-                  boxShadow: [BoxShadow(color: widget.ev.color.withOpacity(0.35), blurRadius: 10)],
-                ),
-                child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
-                  Text(widget.ev.month.toUpperCase(), style: const TextStyle(
-                    fontSize: 9, color: kWhite, fontWeight: FontWeight.w800, letterSpacing: 1,
-                  )),
-                  Text(widget.ev.day, style: const TextStyle(
-                    fontSize: 22, color: kWhite, fontWeight: FontWeight.w900, height: 1.1,
-                  )),
-                ]),
-              ),
-              const SizedBox(width: 14),
-              Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                Row(children: [
-                  Text(widget.ev.emoji, style: const TextStyle(fontSize: 15)),
-                  const SizedBox(width: 6),
-                  Expanded(child: Text(widget.ev.title, style: const TextStyle(
-                    fontSize: 14, fontWeight: FontWeight.w800, color: kNavy,
-                  ))),
-                ]),
-                const SizedBox(height: 4),
-                Text(widget.ev.location, style: const TextStyle(fontSize: 11, color: kMuted)),
-              ])),
-              _NavyPill(widget.ev.badge, color: widget.ev.color),
-            ]),
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-class ReportsPage extends StatelessWidget {
-  const ReportsPage({super.key});
-
-  static const _reports = [
-    ('📊', 'Block Report', 'Full chapter activity summary', kNavy, [kNavy, kNavyLight]),
-    ('💰', 'Financial Report', 'Budget and expenses', kGold, [kGold, kGoldLight]),
-    ('👥', 'Member Roster', 'Active members and dues status', kTeal, [kTeal, Color(0xFF0EA5A0)]),
-    ('⏱️', 'Service Hours', 'Community service log', kGreen, [kGreen, Color(0xFF48BB78)]),
-    ('🏆', 'Points Ledger', 'Event-by-event point history', kRed, [kRed, Color(0xFFFC8181)]),
-  ];
-
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      backgroundColor: kBg,
-      appBar: _NavyAppBar('Reports', subtitle: 'Chapter Documents'),
-      body: Stack(
-        children: [
-          Positioned(bottom: 80, right: -50,
-            child: Container(width: 200, height: 200, decoration: BoxDecoration(
-              shape: BoxShape.circle, color: kNavy.withOpacity(0.04),
-            ))),
-          ListView(
-            padding: const EdgeInsets.all(20),
-            children: [
-              const Text('GENERATE REPORTS', style: TextStyle(
-                fontSize: 10, fontWeight: FontWeight.w800, color: kMuted, letterSpacing: 2,
-              )),
-              const SizedBox(height: 16),
-              ..._reports.map((r) => Padding(
-                padding: const EdgeInsets.only(bottom: 12),
-                child: _ReportCard(
-                  emoji: r.$1, title: r.$2, desc: r.$3,
-                  color: r.$4 as Color, gradient: r.$5 as List<Color>,
-                ),
-              )),
-            ],
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-class _ReportCard extends StatefulWidget {
-  final String emoji, title, desc;
-  final Color color;
-  final List<Color> gradient;
-  const _ReportCard({required this.emoji, required this.title, required this.desc, required this.color, required this.gradient});
-  @override
-  State<_ReportCard> createState() => _ReportCardState();
-}
-
-class _ReportCardState extends State<_ReportCard> with SingleTickerProviderStateMixin {
-  late AnimationController _c;
-
-  @override
-  void initState() {
-    super.initState();
-    _c = AnimationController(vsync: this, duration: const Duration(milliseconds: 120),
-        lowerBound: 0.96, upperBound: 1.0, value: 1.0);
-  }
-
-  @override
-  void dispose() { _c.dispose(); super.dispose(); }
-
-  @override
-  Widget build(BuildContext context) {
-    return GestureDetector(
-      onTapDown: (_) => _c.reverse(),
-      onTapUp: (_) {
-        _c.forward();
-        showModalBottomSheet(
-          context: context, backgroundColor: Colors.transparent,
-          isScrollControlled: true, builder: (_) => const _BlockReportSheet(),
-        );
-      },
-      onTapCancel: () => _c.forward(),
-      child: ScaleTransition(
-        scale: _c,
-        child: ClipRRect(
-          borderRadius: BorderRadius.circular(20),
-          child: BackdropFilter(
-            filter: ImageFilter.blur(sigmaX: 10, sigmaY: 10),
-            child: Container(
-              decoration: BoxDecoration(
-                color: kGlassCard,
-                borderRadius: BorderRadius.circular(20),
-                border: Border.all(color: widget.color.withOpacity(0.2)),
-                boxShadow: [
-                  BoxShadow(color: widget.color.withOpacity(0.07), blurRadius: 16, offset: const Offset(0, 4)),
-                ],
-              ),
-              child: Row(children: [
-                Container(
-                  width: 6, height: 70,
-                  decoration: BoxDecoration(
-                    gradient: LinearGradient(
-                      colors: widget.gradient,
-                      begin: Alignment.topCenter, end: Alignment.bottomCenter,
-                    ),
-                    borderRadius: const BorderRadius.horizontal(left: Radius.circular(20)),
-                  ),
-                ),
-                const SizedBox(width: 14),
-                Container(
-                  width: 46, height: 46,
-                  decoration: BoxDecoration(
-                    color: widget.color.withOpacity(0.1),
-                    borderRadius: BorderRadius.circular(14),
-                    border: Border.all(color: widget.color.withOpacity(0.2)),
-                  ),
-                  child: Center(child: Text(widget.emoji, style: const TextStyle(fontSize: 22))),
-                ),
-                const SizedBox(width: 14),
-                Expanded(child: Padding(
-                  padding: const EdgeInsets.symmetric(vertical: 16),
-                  child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                    Text(widget.title, style: const TextStyle(
-                      fontSize: 14, fontWeight: FontWeight.w800, color: kNavy,
-                    )),
-                    const SizedBox(height: 3),
-                    Text(widget.desc, style: const TextStyle(fontSize: 11, color: kMuted)),
-                  ]),
-                )),
-                Padding(
-                  padding: const EdgeInsets.only(right: 16),
-                  child: Container(
-                    width: 32, height: 32,
-                    decoration: BoxDecoration(
-                      gradient: LinearGradient(colors: widget.gradient),
-                      borderRadius: BorderRadius.circular(10),
-                      boxShadow: [BoxShadow(color: widget.color.withOpacity(0.3), blurRadius: 8)],
-                    ),
-                    child: const Icon(Icons.arrow_forward_ios_rounded, color: kWhite, size: 13),
-                  ),
-                ),
-              ]),
-            ),
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-class ProfilePage extends StatefulWidget {
-  const ProfilePage({super.key});
-  @override
-  State<ProfilePage> createState() => _ProfilePageState();
-}
-
-class _ProfilePageState extends State<ProfilePage> with TickerProviderStateMixin {
-  late AnimationController _enterCtrl;
-  late AnimationController _orbitCtrl;
-  late Animation<double> _fade;
-  late Animation<Offset> _slide;
-
-  @override
-  void initState() {
-    super.initState();
-    _enterCtrl = AnimationController(vsync: this, duration: const Duration(milliseconds: 500));
-    _orbitCtrl = AnimationController(vsync: this, duration: const Duration(seconds: 7))..repeat();
-    _fade = CurvedAnimation(parent: _enterCtrl, curve: Curves.easeOut);
-    _slide = Tween<Offset>(begin: const Offset(0, 0.05), end: Offset.zero)
-        .animate(CurvedAnimation(parent: _enterCtrl, curve: Curves.easeOut));
-    _enterCtrl.forward();
-  }
-
-  @override
-  void dispose() { _enterCtrl.dispose(); _orbitCtrl.dispose(); super.dispose(); }
-
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      backgroundColor: kBg,
-      appBar: _NavyAppBar('My Profile', subtitle: 'Member Details'),
-      body: Stack(
-        children: [
-          Positioned(top: -30, left: -30,
-            child: Container(width: 160, height: 160, decoration: BoxDecoration(
-              shape: BoxShape.circle, color: kGold.withOpacity(0.08),
-            ))),
-          FadeTransition(
-            opacity: _fade,
-            child: SlideTransition(
-              position: _slide,
-              child: ListView(
-                padding: const EdgeInsets.all(20),
-                children: [
-                  _ProfileHero(orbitCtrl: _orbitCtrl),
-                  const SizedBox(height: 22),
-                  _MiniStatsRow(),
-                  const SizedBox(height: 22),
-                  _InfoSection('Chapter Info', [
-                    _InfoRow('🏫', 'School', 'Westview High School', kNavy),
-                    _InfoRow('📍', 'State', 'Washington', kTeal),
-                    _InfoRow('🪪', 'Member ID', '#WA-2847', kNavy),
-                    _InfoRow('📅', 'Member Since', 'Sep 2022', kGold),
-                  ]),
-                  const SizedBox(height: 16),
-                  _InfoSection('My Record', [
-                    _InfoRow('🎯', 'Events Competed', '12', kNavy),
-                    _InfoRow('🥇', 'Awards Won', '5', kGold),
-                    _InfoRow('💳', 'Dues Status', 'Paid ✓', kGreen),
-                  ]),
-                  const SizedBox(height: 24),
-                  GestureDetector(
-                    onTap: () {},
-                    child: ClipRRect(
-                      borderRadius: BorderRadius.circular(16),
-                      child: BackdropFilter(
-                        filter: ImageFilter.blur(sigmaX: 8, sigmaY: 8),
-                        child: Container(
-                          height: 52,
-                          decoration: BoxDecoration(
-                            color: kRed.withOpacity(0.07),
-                            borderRadius: BorderRadius.circular(16),
-                            border: Border.all(color: kRed.withOpacity(0.3)),
-                          ),
-                          child: const Row(mainAxisAlignment: MainAxisAlignment.center, children: [
-                            Icon(Icons.logout_rounded, color: kRed, size: 18),
-                            SizedBox(width: 8),
-                            Text('Sign Out', style: TextStyle(
-                              color: kRed, fontWeight: FontWeight.w800, fontSize: 15,
-                            )),
-                          ]),
-                        ),
-                      ),
-                    ),
-                  ),
-                  const SizedBox(height: 12),
-                ],
-              ),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-class _ProfileHero extends StatelessWidget {
-  final AnimationController orbitCtrl;
-  const _ProfileHero({required this.orbitCtrl});
-
-  @override
-  Widget build(BuildContext context) {
-    return Center(
-      child: Column(children: [
-        Stack(alignment: Alignment.center, children: [
-          AnimatedBuilder(
-            animation: orbitCtrl,
-            builder: (_, __) => CustomPaint(
-              size: const Size(120, 120),
-              painter: _OrbitPainter(orbitCtrl.value * 2 * math.pi),
-            ),
-          ),
-          Container(
-            width: 90, height: 90,
-            decoration: BoxDecoration(
-              shape: BoxShape.circle,
-              gradient: const LinearGradient(
-                colors: [kNavy, kNavyLight],
-                begin: Alignment.topLeft, end: Alignment.bottomRight,
-              ),
-              border: Border.all(color: kGold, width: 3),
-              boxShadow: [
-                BoxShadow(color: kNavy.withOpacity(0.3), blurRadius: 20, spreadRadius: 2),
-                BoxShadow(color: kGold.withOpacity(0.2), blurRadius: 14),
-              ],
-            ),
-            child: const Center(
-              child: Text('AJ', style: TextStyle(color: kWhite, fontSize: 30, fontWeight: FontWeight.w900)),
-            ),
-          ),
-        ]),
-        const SizedBox(height: 16),
-        const Text('Alex Johnson', style: TextStyle(
-          fontSize: 26, fontWeight: FontWeight.w900, color: kNavy, letterSpacing: -0.4,
-        )),
-        const SizedBox(height: 8),
-        _GoldPill('Chapter Vice President 🎖️', filled: true),
-        const SizedBox(height: 6),
-        const Text('Westview HS · Washington State',
-            style: TextStyle(fontSize: 12, color: kMuted, fontWeight: FontWeight.w500)),
-      ]),
-    );
-  }
-}
-
-class _OrbitPainter extends CustomPainter {
-  final double angle;
-  _OrbitPainter(this.angle);
-
-  @override
-  void paint(Canvas canvas, Size size) {
-    final cx = size.width / 2;
-    final cy = size.height / 2;
-    final r = size.width / 2 - 4;
-
-    canvas.drawCircle(
-      Offset(cx, cy), r,
-      Paint()
-        ..color = kGold.withOpacity(0.15)
-        ..style = PaintingStyle.stroke
-        ..strokeWidth = 1.5,
-    );
-
-    final x = cx + r * math.cos(angle);
-    final y = cy + r * math.sin(angle);
-
-    canvas.drawCircle(Offset(x, y), 7,
-        Paint()..color = kGold.withOpacity(0.3)..maskFilter = const MaskFilter.blur(BlurStyle.normal, 7));
-    canvas.drawCircle(Offset(x, y), 5, Paint()..color = kGold);
-  }
-
-  @override
-  bool shouldRepaint(_OrbitPainter old) => old.angle != angle;
-}
-
-class _MiniStatsRow extends StatelessWidget {
-  @override
-  Widget build(BuildContext context) {
-    return Row(mainAxisAlignment: MainAxisAlignment.spaceEvenly, children: const [
-      _MiniStat('2,847', 'Points', '⚡', kGold),
-      _MiniStat('12', 'Events', '🏆', kNavy),
-      _MiniStat('112', 'Hrs', '💚', kGreen),
-    ]);
-  }
-}
-
-class _MiniStat extends StatelessWidget {
-  final String value, label, emoji;
-  final Color color;
-  const _MiniStat(this.value, this.label, this.emoji, this.color);
-
-  @override
-  Widget build(BuildContext context) {
-    return ClipRRect(
-      borderRadius: BorderRadius.circular(18),
-      child: BackdropFilter(
-        filter: ImageFilter.blur(sigmaX: 8, sigmaY: 8),
-        child: Container(
-          width: 96, padding: const EdgeInsets.symmetric(vertical: 16),
-          decoration: BoxDecoration(
-            color: kGlassCard,
-            borderRadius: BorderRadius.circular(18),
-            border: Border.all(color: color.withOpacity(0.2)),
-            boxShadow: [BoxShadow(color: color.withOpacity(0.08), blurRadius: 12, offset: const Offset(0, 4))],
-          ),
-          child: Column(children: [
-            Text(emoji, style: const TextStyle(fontSize: 22)),
-            const SizedBox(height: 6),
-            Text(value, style: TextStyle(
-              fontSize: 20, fontWeight: FontWeight.w900, color: color, letterSpacing: -0.5,
-            )),
-            Text(label, style: const TextStyle(fontSize: 10, color: kMuted, fontWeight: FontWeight.w700)),
-          ]),
-        ),
-      ),
-    );
-  }
-}
-
-class _InfoSection extends StatelessWidget {
-  final String title;
-  final List<_InfoRow> rows;
-  const _InfoSection(this.title, this.rows, {super.key});
-
-  @override
-  Widget build(BuildContext context) {
-    return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-      Text(title.toUpperCase(), style: const TextStyle(
-        fontSize: 10, fontWeight: FontWeight.w800, color: kMuted, letterSpacing: 2,
-      )),
-      const SizedBox(height: 10),
-      ClipRRect(
-        borderRadius: BorderRadius.circular(20),
-        child: BackdropFilter(
-          filter: ImageFilter.blur(sigmaX: 10, sigmaY: 10),
-          child: Container(
-            decoration: BoxDecoration(
-              color: kGlassCard,
-              borderRadius: BorderRadius.circular(20),
-              border: Border.all(color: kBorder),
-              boxShadow: [BoxShadow(color: kNavy.withOpacity(0.05), blurRadius: 16, offset: const Offset(0, 4))],
-            ),
-            child: Column(
-              children: rows.asMap().entries.map((e) => Column(children: [
-                e.value,
-                if (e.key < rows.length - 1) Divider(height: 1, indent: 60, color: kBorder.withOpacity(0.5)),
-              ])).toList(),
-            ),
-          ),
-        ),
-      ),
-    ]);
-  }
-}
-
-class _InfoRow extends StatelessWidget {
-  final String emoji, label, value;
-  final Color color;
-  const _InfoRow(this.emoji, this.label, this.value, this.color, {super.key});
-
-  @override
-  Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
-      child: Row(children: [
-        Container(
-          width: 32, height: 32,
-          decoration: BoxDecoration(
-            color: color.withOpacity(0.1),
-            borderRadius: BorderRadius.circular(10),
-            border: Border.all(color: color.withOpacity(0.2)),
-          ),
-          child: Center(child: Text(emoji, style: const TextStyle(fontSize: 15))),
-        ),
-        const SizedBox(width: 12),
-        Text(label, style: const TextStyle(fontSize: 13, color: kMuted, fontWeight: FontWeight.w500)),
-        const Spacer(),
-        Text(value, style: TextStyle(fontSize: 13, fontWeight: FontWeight.w800, color: color)),
-      ]),
+      child: const Text('Notifications'),
     );
   }
 }
